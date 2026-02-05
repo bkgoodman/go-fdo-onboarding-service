@@ -76,27 +76,35 @@ func (s *VoucherSigningService) SignVoucher(ctx context.Context, voucher *fdo.Vo
 		return s.signVoucherInternal(ctx, voucher, nextOwner, extraData)
 	case "external":
 		return s.signVoucherExternal(ctx, voucher, nextOwner, serial, model, extraData)
+	case "hsm":
+		return s.signVoucherHSM(ctx, voucher, nextOwner, serial, model, extraData)
 	default:
 		return nil, fmt.Errorf("unsupported voucher signing mode: %s", s.config.Mode)
 	}
 }
 
 // signVoucherInternal signs voucher using internal owner key
+// This is the same as the default behavior - let the go-fdo library handle it
 func (s *VoucherSigningService) signVoucherInternal(ctx context.Context, voucher *fdo.Voucher, nextOwner crypto.PublicKey, extraData map[int][]byte) (*fdo.Voucher, error) {
-	fmt.Printf("🔧 Internal voucher signing with OVEExtra data\n")
+	fmt.Printf("🔧 Internal voucher signing - letting go-fdo library handle it automatically\n")
 	fmt.Printf("📋 OVEExtra data keys: %d\n", len(extraData))
 	for key, value := range extraData {
 		fmt.Printf("   Key %d: %d bytes\n", key, len(value))
 	}
 
-	// For internal signing, we need to disable voucher signing and let the library handle it
-	// The library will use the manufacturer key from the database automatically
-	fmt.Printf("⚠️  Internal voucher signing not implemented - returning original voucher\n")
+	// Internal signing is the same as default behavior - return voucher unchanged
+	// The go-fdo library will handle the actual voucher extension and signing
 	return voucher, nil
 }
 
-// signVoucherExternal signs voucher using external HSM service
+// signVoucherExternal signs voucher using external service (legacy compatibility)
 func (s *VoucherSigningService) signVoucherExternal(ctx context.Context, voucher *fdo.Voucher, nextOwner crypto.PublicKey, serial, model string, extraData map[int][]byte) (*fdo.Voucher, error) {
+	// External mode is an alias for HSM mode - they do the same thing
+	return s.signVoucherHSM(ctx, voucher, nextOwner, serial, model, extraData)
+}
+
+// signVoucherHSM signs voucher using external HSM service
+func (s *VoucherSigningService) signVoucherHSM(ctx context.Context, voucher *fdo.Voucher, nextOwner crypto.PublicKey, serial, model string, extraData map[int][]byte) (*fdo.Voucher, error) {
 	// For external HSM mode, we need to create an external signer that intercepts the crypto.Sign calls
 	// The HSM will receive digest blobs and return signatures
 

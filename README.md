@@ -409,8 +409,18 @@ voucher_management:
 
 | Mode | Description | Use Case | Security |
 |------|-------------|----------|----------|
-| `external` | Use external HSM for signing | Production, high security | Highest |
-| `internal` | Use built-in key management | Development, testing | Moderate |
+| `internal` | Default mode - lets go-fdo library handle signing automatically | Development, testing, production | Good |
+| `external` | Legacy alias for HSM mode - external HSM signing | Production, high security | Highest |
+| `hsm` | External HSM mode - requires public key import and custom signing | Production, high security | Highest |
+
+**Voucher Signing Vernacular:**
+
+- **`internal`**: Same as default go-fdo behavior - library handles voucher extension and signing automatically using manufacturer key from database
+- **`external`**: Legacy compatibility mode - alias for `hsm` mode (both do the same thing)
+- **`hsm`**: External HSM mode - requires public key import and custom signing implementation
+- **Default**: `internal` mode is used by default with `first_time_init: true` to create keys on first boot
+
+**Note**: `external` and `hsm` modes are functionally identical - `external` is kept for backward compatibility.
 
 #### **Supported Key Types**
 

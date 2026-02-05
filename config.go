@@ -96,11 +96,11 @@ func DefaultConfig() *Config {
 		VoucherManagement: VoucherConfig{
 			PersistToDB: true,
 			VoucherSigning: VoucherSigningConfig{
-				Mode:            "",               // "" = disabled, "internal" or "external"
+				Mode:            "internal",       // "internal" = default, "hsm" = external HSM
 				OwnerKeyType:    "ec384",          // for internal mode
-				FirstTimeInit:   false,            // for internal mode
-				ExternalCommand: "",               // for external mode
-				ExternalTimeout: 30 * time.Second, // for external mode
+				FirstTimeInit:   true,             // for internal mode - create key on first boot
+				ExternalCommand: "",               // for hsm mode
+				ExternalTimeout: 30 * time.Second, // for hsm mode
 			},
 			OwnerSignover: struct {
 				Enabled         bool          `yaml:"enabled"`

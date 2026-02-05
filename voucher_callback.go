@@ -115,7 +115,8 @@ func (v *VoucherCallbackService) BeforeVoucherPersist(ctx context.Context, sessi
 			}
 		}
 
-		fmt.Printf("🔐 DEBUG: About to call SignVoucher with nextOwner=%v\n", nextOwner != nil)
+		// Always call voucher signing - default mode is "internal" which lets go-fdo handle it
+		fmt.Printf("🔐 DEBUG: About to call SignVoucher with mode=%s, nextOwner=%v\n", v.config.VoucherSigning.Mode, nextOwner != nil)
 		signedVoucher, err := v.voucherSigningService.SignVoucher(ctx, ov, nextOwner, serial, model, extraData)
 		if err != nil {
 			return false, fmt.Errorf("voucher signing failed: %w", err)
