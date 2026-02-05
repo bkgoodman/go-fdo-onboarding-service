@@ -1,0 +1,24 @@
+# FDO Manufacturing Station Configuration
+
+# Basic settings
+debug: false
+fdo_version: 101
+
+# Server settings
+server:
+  addr: "localhost:9999"
+  ext_addr: "localhost:9999"
+  use_tls: false
+  insecure_tls: false
+
+# Database settings
+database:
+  path: "test.db"
+  password: ""
+
+# Manufacturing settings
+manufacturing:
+  device_ca_key_type: "ec384"
+  owner_key_type: "ec384"
+  generate_certificates: true
+  first_time_init: false
