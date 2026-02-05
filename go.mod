@@ -1,4 +1,4 @@
-module fdo-manufacturing-station
+module fdo-onboarding-service
 
 go 1.25.0
 

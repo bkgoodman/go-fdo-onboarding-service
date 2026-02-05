@@ -2,3 +2,7 @@ cred.bin
 fdo-client
 *.log
 go-fdo
+fdo-server
+manufacturing.db
+.vscode/settings.json
+manufacturing.db

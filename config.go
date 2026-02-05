@@ -15,7 +15,8 @@ import (
 // Config represents the manufacturing station configuration
 type Config struct {
 	// Basic configuration
-	Debug bool `yaml:"debug"`
+	Debug      bool `yaml:"debug"`
+	FDOVersion int  `yaml:"fdo_version"` // 101 or 200
 
 	// Server configuration
 	Server struct {
@@ -44,6 +45,64 @@ type Config struct {
 		Entries []RendezvousEntry `yaml:"entries"`
 	} `yaml:"rendezvous"`
 
+	// Owner configuration (from server.go flags)
+	Owner struct {
+		GenerateCertificates bool `yaml:"generate_certificates"`
+	} `yaml:"owner"`
+
+	// TO0 configuration
+	TO0 struct {
+		Addr              string `yaml:"addr"`               // Rendezvous server address
+		GUID              string `yaml:"guid"`               // Device GUID to register
+		Delegate          string `yaml:"delegate"`           // Delegate cert name
+		Bypass            bool   `yaml:"bypass"`             // Skip TO1
+		Delay             int    `yaml:"delay"`              // Delay TO1 by N seconds
+		ReplacementPolicy string `yaml:"replacement_policy"` // RV voucher replacement policy
+	} `yaml:"to0"`
+
+	// Resale configuration
+	Resale struct {
+		GUID string `yaml:"guid"` // Voucher GUID to extend for resale
+		Key  string `yaml:"key"`  // Path to PEM-encoded x.509 public key for next owner
+	} `yaml:"resale"`
+
+	// FSIM configurations
+	FSIM struct {
+		Downloads       []string `yaml:"downloads"`         // Files to download
+		UploadDir       string   `yaml:"upload_dir"`        // Upload directory
+		Uploads         []string `yaml:"uploads"`           // Files to upload
+		Wgets           []string `yaml:"wgets"`             // URLs to fetch
+		Sysconfig       []string `yaml:"sysconfig"`         // key=value pairs
+		PayloadFile     string   `yaml:"payload_file"`      // Single payload file
+		PayloadMime     string   `yaml:"payload_mime"`      // MIME type for payload file
+		PayloadFiles    []string `yaml:"payload_files"`     // Multiple payload files (type:file format)
+		BMOFile         string   `yaml:"bmo_file"`          // Single BMO file
+		BMOImageType    string   `yaml:"bmo_image_type"`    // Image type for BMO file
+		BMOFiles        []string `yaml:"bmo_files"`         // Multiple BMO files (type:file format)
+		WiFiConfigFile  string   `yaml:"wifi_config_file"`  // WiFi configuration file
+		Credentials     []string `yaml:"credentials"`       // Credential specifications
+		PubkeyRequests  []string `yaml:"pubkey_requests"`   // Public key requests
+		CommandDate     bool     `yaml:"command_date"`      // Use fdo.command FSIM to run "date +%s"
+		SingleSidedWiFi bool     `yaml:"single_sided_wifi"` // Single-sided WiFi setup
+	} `yaml:"fsim"`
+
+	// Delegate configuration
+	Delegate struct {
+		RV      string `yaml:"rv"`      // Use delegate cert for RV blob signing
+		Onboard string `yaml:"onboard"` // Use delegate cert for TO2
+	} `yaml:"delegate"`
+
+	// Import/Export configuration
+	Import struct {
+		Voucher string `yaml:"voucher"` // Import PEM encoded voucher file
+	} `yaml:"import"`
+
+	Print struct {
+		OwnerPublic  string `yaml:"owner_public"`  // Print owner public key of type
+		OwnerPrivate string `yaml:"owner_private"` // Print owner private key of type
+		OwnerChain   string `yaml:"owner_chain"`   // Print owner chain of type
+	} `yaml:"print"`
+
 	// Voucher management configuration
 	VoucherManagement VoucherConfig `yaml:"voucher_management"`
 }
@@ -58,7 +117,8 @@ type RendezvousEntry struct {
 // DefaultConfig returns a configuration with default values
 func DefaultConfig() *Config {
 	return &Config{
-		Debug: false,
+		Debug:      false,
+		FDOVersion: 101,
 		Server: struct {
 			Addr        string `yaml:"addr"`
 			ExtAddr     string `yaml:"ext_addr"`
@@ -92,6 +152,89 @@ func DefaultConfig() *Config {
 			Entries []RendezvousEntry `yaml:"entries"`
 		}{
 			Entries: []RendezvousEntry{},
+		},
+		Owner: struct {
+			GenerateCertificates bool `yaml:"generate_certificates"`
+		}{
+			GenerateCertificates: false,
+		},
+		TO0: struct {
+			Addr              string `yaml:"addr"`
+			GUID              string `yaml:"guid"`
+			Delegate          string `yaml:"delegate"`
+			Bypass            bool   `yaml:"bypass"`
+			Delay             int    `yaml:"delay"`
+			ReplacementPolicy string `yaml:"replacement_policy"`
+		}{
+			Addr:              "",
+			GUID:              "",
+			Delegate:          "",
+			Bypass:            false,
+			Delay:             0,
+			ReplacementPolicy: "allow-any",
+		},
+		Resale: struct {
+			GUID string `yaml:"guid"`
+			Key  string `yaml:"key"`
+		}{
+			GUID: "",
+			Key:  "",
+		},
+		FSIM: struct {
+			Downloads       []string `yaml:"downloads"`
+			UploadDir       string   `yaml:"upload_dir"`
+			Uploads         []string `yaml:"uploads"`
+			Wgets           []string `yaml:"wgets"`
+			Sysconfig       []string `yaml:"sysconfig"`
+			PayloadFile     string   `yaml:"payload_file"`
+			PayloadMime     string   `yaml:"payload_mime"`
+			PayloadFiles    []string `yaml:"payload_files"`
+			BMOFile         string   `yaml:"bmo_file"`
+			BMOImageType    string   `yaml:"bmo_image_type"`
+			BMOFiles        []string `yaml:"bmo_files"`
+			WiFiConfigFile  string   `yaml:"wifi_config_file"`
+			Credentials     []string `yaml:"credentials"`
+			PubkeyRequests  []string `yaml:"pubkey_requests"`
+			CommandDate     bool     `yaml:"command_date"`
+			SingleSidedWiFi bool     `yaml:"single_sided_wifi"`
+		}{
+			Downloads:       []string{},
+			UploadDir:       "uploads",
+			Uploads:         []string{},
+			Wgets:           []string{},
+			Sysconfig:       []string{},
+			PayloadFile:     "",
+			PayloadMime:     "application/octet-stream",
+			PayloadFiles:    []string{},
+			BMOFile:         "",
+			BMOImageType:    "application/x-iso9660-image",
+			BMOFiles:        []string{},
+			WiFiConfigFile:  "",
+			Credentials:     []string{},
+			PubkeyRequests:  []string{},
+			CommandDate:     false,
+			SingleSidedWiFi: false,
+		},
+		Delegate: struct {
+			RV      string `yaml:"rv"`
+			Onboard string `yaml:"onboard"`
+		}{
+			RV:      "",
+			Onboard: "",
+		},
+		Import: struct {
+			Voucher string `yaml:"voucher"`
+		}{
+			Voucher: "",
+		},
+		Print: struct {
+			OwnerPublic  string `yaml:"owner_public"`
+			OwnerPrivate string `yaml:"owner_private"`
+			OwnerChain   string `yaml:"owner_chain"`
+		}{
+			OwnerPublic:  "",
+			OwnerPrivate: "",
+			OwnerChain:   "",
 		},
 		VoucherManagement: VoucherConfig{
 			PersistToDB: true,
@@ -153,7 +296,7 @@ func LoadConfig(configPath string) (*Config, error) {
 // SaveConfig saves the configuration to a YAML file
 func SaveConfig(config *Config, configPath string) error {
 	if configPath == "" {
-		configPath = "config.yaml"
+		configPath = "fdoserver.cfg"
 	}
 
 	data, err := yaml.Marshal(config)
