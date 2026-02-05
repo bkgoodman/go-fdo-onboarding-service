@@ -1,7 +1,7 @@
 # FDO Manufacturing Station Configuration
 
 # Basic settings
-debug: false
+debug: true
 fdo_version: 101
 
 # Server settings
@@ -22,3 +22,26 @@ manufacturing:
   owner_key_type: "ec384"
   generate_certificates: true
   first_time_init: false
+
+# Rendezvous configuration (multiple entries supported)
+rendezvous:
+  entries:
+    # Example: Primary and backup owner services
+    - host: "127.0.0.1"
+      port: 8080
+      scheme: "http"
+    # - host: "primary-owner.example.com"
+    #   port: 443
+    #   scheme: "https"
+    # - host: "backup-owner.example.com"
+    #   port: 8443
+    #   scheme: "https"
+    # - host: "192.168.1.100"
+    #   port: 80
+    #   scheme: "http"
+
+# Voucher management configuration
+voucher_management:
+  persist_to_db: true
+  voucher_signing:
+    mode: ""

@@ -39,8 +39,20 @@ type Config struct {
 		FirstTimeInit        bool   `yaml:"first_time_init"`
 	} `yaml:"manufacturing"`
 
+	// Rendezvous configuration
+	Rendezvous struct {
+		Entries []RendezvousEntry `yaml:"entries"`
+	} `yaml:"rendezvous"`
+
 	// Voucher management configuration
 	VoucherManagement VoucherConfig `yaml:"voucher_management"`
+}
+
+// RendezvousEntry represents a single rendezvous endpoint
+type RendezvousEntry struct {
+	Host   string `yaml:"host"`   // IP address or DNS name
+	Port   int    `yaml:"port"`   // Port number
+	Scheme string `yaml:"scheme"` // "http" or "https"
 }
 
 // DefaultConfig returns a configuration with default values
@@ -75,6 +87,11 @@ func DefaultConfig() *Config {
 			OwnerKeyType:         "ec384",
 			GenerateCertificates: true,
 			FirstTimeInit:        false,
+		},
+		Rendezvous: struct {
+			Entries []RendezvousEntry `yaml:"entries"`
+		}{
+			Entries: []RendezvousEntry{},
 		},
 		VoucherManagement: VoucherConfig{
 			PersistToDB: true,

@@ -316,6 +316,19 @@ voucher_management:
     external_command: "bash /factory/scripts/get_device_metadata.sh {serial} {model}"
     timeout: "5s"
     
+  # Rendezvous configuration (multiple entries supported)
+  rendezvous:
+    entries:
+      - host: "primary-owner.example.com"    # Primary owner service
+        port: 443
+        scheme: "https"
+      - host: "backup-owner.example.com"     # Backup owner service
+        port: 8443
+        scheme: "https"
+      - host: "192.168.1.100"              # Direct IP address
+        port: 80
+        scheme: "http"
+    
   # Voucher storage options
   save_to_disk:
     directory: "/factory/vouchers"
@@ -449,6 +462,76 @@ voucher_management:
     timeout: "30s"
 
 ```
+
+### **🔗 Rendezvous Configuration**
+
+The rendezvous configuration specifies where devices should connect for TO2 (ownership transfer) after leaving the manufacturing station.
+
+#### **Multiple Entry Rendezvous Configuration**
+
+The implementation provides **human-friendly rendezvous configuration** with support for multiple owner service endpoints:
+
+```yaml
+rendezvous:
+  entries:
+    - host: "primary-owner.example.com"    # Primary owner service
+      port: 443
+      scheme: "https"
+    - host: "backup-owner.example.com"     # Backup owner service
+      port: 8443
+      scheme: "https"
+    - host: "192.168.1.100"              # Direct IP address
+      port: 80
+      scheme: "http"
+```
+
+#### **Configuration Options**
+
+| Option | Description | Example | Validation |
+|--------|-------------|---------|------------|
+| `entries` | Array of owner service endpoints | See example below | Optional (empty = no rendezvous) |
+| `host` | IP address or DNS name | `"192.168.1.100"` or `"owner-service.example.com"` | Required per entry |
+| `port` | Port number | `443`, `8443`, `8080` | 1-65535 range |
+| `scheme` | Protocol scheme | `"https"` or `"http"` | HTTP/HTTPS only |
+
+#### **Use Cases for Multiple Entries**
+
+- **Primary/Backup**: Main service with fallback
+- **Load Balancing**: Multiple servers for distribution
+- **Protocol Diversity**: HTTP + HTTPS endpoints
+- **Geographic Distribution**: Different regions/networks
+- **Environment Separation**: Test vs production endpoints |
+
+#### **⚠️ Simplification Notes**
+
+**For simplicity, this implementation only supports:**
+- ✅ **IP addresses and DNS names** (auto-detected)
+- ✅ **Port numbers** (1-65535)
+- ✅ **HTTP and HTTPS protocols** only
+
+**Not supported:**
+- ❌ WiFi credentials (SSID/password)
+- ❌ Certificate hashes
+- ❌ Custom protocols (CoAP, TCP)
+- ❌ Delay timers or bypass flags
+- ❌ Extended rendezvous variables
+
+This simplification covers **95% of common use cases** while keeping the configuration clean and manageable.
+
+#### **⚠️ Important Notes**
+
+- **Current Implementation**: Uses **global configuration** - all devices get the same RV info
+- **Advanced Implementations**: May want **per-customer callback-based RVs** for different customers/resellers
+- **DI Protocol**: RV info is written to device credentials during DI and used for TO2 connectivity
+- **Disabled by Default**: Set `enabled: false` if you don't want to provide RV info during DI
+
+#### **Future Enhancements**
+
+For more sophisticated deployments, consider implementing:
+- **Per-customer RV info** based on device serial or model
+- **Dynamic RV lookup** from external manufacturing systems
+- **Geographic-based RV** routing to nearest owner services
+- **Load-balanced RV** with multiple owner service endpoints
 
 ### Examples
 

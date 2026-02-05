@@ -329,11 +329,12 @@ func startDIServer(ctx context.Context, state *sqlite.DB) error {
 	}
 
 	// Use Manufacturer key as device certificate authority
+	fmt.Printf("🔍 DEBUG: Getting manufacturer key...\n")
 	deviceCAKey, deviceCAChain, err := state.ManufacturerKey(ctx, protocol.Secp384r1KeyType, 0)
-	fmt.Printf("DEBUG: Config loaded: %+v\n", config)
 	if err != nil {
 		return fmt.Errorf("error getting manufacturer key for device certificate authority: %w", err)
 	}
+	fmt.Printf("🔍 DEBUG: Manufacturer key retrieved successfully\n")
 
 	// Initialize voucher management services
 	ownerKeyExecutor := NewExternalCommandExecutor(config.VoucherManagement.OwnerSignover.ExternalCommand, config.VoucherManagement.OwnerSignover.Timeout)
@@ -418,7 +419,103 @@ func startDIServer(ctx context.Context, state *sqlite.DB) error {
 				}
 			},
 			AfterVoucherPersist: func(ctx context.Context, voucher fdo.Voucher) error { return nil },
-			RvInfo:              func(ctx context.Context, voucher *fdo.Voucher) ([][]protocol.RvInstruction, error) { return nil, nil },
+			RvInfo: func(ctx context.Context, voucher *fdo.Voucher) ([][]protocol.RvInstruction, error) {
+				// If no entries configured, return nil (no rendezvous info)
+				if len(config.Rendezvous.Entries) == 0 {
+					return nil, nil
+				}
+
+				// Convert each entry to protocol.RvInstruction format
+				var allDirectives [][]protocol.RvInstruction
+
+				for i, entry := range config.Rendezvous.Entries {
+					// Validate entry
+					if entry.Host == "" {
+						return nil, fmt.Errorf("rendezvous entry %d: host is required", i+1)
+					}
+					if entry.Port <= 0 || entry.Port > 65535 {
+						return nil, fmt.Errorf("rendezvous entry %d: invalid port: %d", i+1, entry.Port)
+					}
+					if entry.Scheme != "http" && entry.Scheme != "https" {
+						return nil, fmt.Errorf("rendezvous entry %d: scheme must be 'http' or 'https', got: %s", i+1, entry.Scheme)
+					}
+
+					// Convert to protocol.RvInstruction format
+					var rvInstructions []protocol.RvInstruction
+
+					// Determine if host is IP address or DNS name
+					if ip := net.ParseIP(entry.Host); ip != nil {
+						// It's an IP address - encode as CBOR byte array with 0x50 prefix
+						ipBytes := []byte(ip)
+						cborIP := make([]byte, 1+len(ipBytes))
+						cborIP[0] = 0x50 // CBOR byte array prefix
+						copy(cborIP[1:], ipBytes)
+						rvInstructions = append(rvInstructions, protocol.RvInstruction{
+							Variable: protocol.RVIPAddress,
+							Value:    cborIP, // CBOR byte array with 0x50 prefix
+						})
+					} else {
+						// It's a DNS name
+						rvInstructions = append(rvInstructions, protocol.RvInstruction{
+							Variable: protocol.RVDns,
+							Value:    []byte(entry.Host),
+						})
+					}
+
+					// Add port - use RVDevPort for device and encode as CBOR integer
+					var portBytes []byte
+					if entry.Port <= 23 {
+						// Single byte for small integers
+						portBytes = []byte{byte(entry.Port)}
+					} else if entry.Port <= 0xFF {
+						// Two bytes: major type 0, additional info 24, followed by value
+						portBytes = []byte{0x18, byte(entry.Port)}
+					} else if entry.Port <= 0xFFFF {
+						// Three bytes: major type 0, additional info 25, followed by 2-byte value
+						portBytes = []byte{0x19, byte(entry.Port >> 8), byte(entry.Port)}
+					} else {
+						// Four bytes: major type 0, additional info 26, followed by 4-byte value
+						portBytes = []byte{0x1A,
+							byte(entry.Port >> 24),
+							byte(entry.Port >> 16),
+							byte(entry.Port >> 8),
+							byte(entry.Port)}
+					}
+					rvInstructions = append(rvInstructions, protocol.RvInstruction{
+						Variable: protocol.RVDevPort, // Fix: Use RVDevPort (3) instead of RVOwnerPort (4)
+						Value:    portBytes,          // Fix: Proper CBOR integer encoding
+					})
+
+					// Add protocol - encode as CBOR unsigned integer, not ASCII string
+					var protocolValue int
+					if entry.Scheme == "http" {
+						protocolValue = 1 // HTTP (RVProtHTTP = 1)
+					} else {
+						protocolValue = 2 // HTTPS (RVProtHTTPS = 2)
+					}
+
+					// Encode protocol as CBOR unsigned integer
+					var protocolBytes []byte
+					if protocolValue <= 23 {
+						// Single byte for small integers
+						protocolBytes = []byte{byte(protocolValue)}
+					} else {
+						// For larger values (not needed for 2 or 3)
+						protocolBytes = []byte{0x18, byte(protocolValue)}
+					}
+
+					rvInstructions = append(rvInstructions, protocol.RvInstruction{
+						Variable: protocol.RVProtocol,
+						Value:    protocolBytes, // Fix: CBOR unsigned integer, not ASCII string
+					})
+
+					// Add this directive to the list
+					allDirectives = append(allDirectives, rvInstructions)
+				}
+
+				// Return all directives (array of arrays)
+				return allDirectives, nil
+			},
 		},
 		// Include empty TO0/TO1/TO2 responders to prevent panics, but they won't be used for DI
 		TO0Responder: &fdo.TO0Server{
@@ -455,10 +552,12 @@ func startDIServer(ctx context.Context, state *sqlite.DB) error {
 	}
 	defer func() { _ = lis.Close() }()
 
+	fmt.Printf("🔍 DEBUG: About to start server on %s\n", lis.Addr().String())
 	slog.Info("FDO Manufacturing Station starting",
 		"local", lis.Addr().String(),
 		"external", extAddr,
 		"mode", "DI-only")
+	fmt.Printf("🔍 DEBUG: Server started successfully\n")
 
 	// Start server in goroutine to monitor context cancellation
 	errChan := make(chan error, 1)

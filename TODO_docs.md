@@ -80,3 +80,26 @@ So we define callbacks to allow FDO to be tied into other system for manufacutri
 This implementation has defined the ability to add such callbacks as external shell commands (e.g. curl commands or scripts) which can be called to send or receive this data from other systems. Implementations MAY simply use those.
 
 Other implementations may wish to define their own callbacks more integrated, replacing the exsting functions in this application, directly. 
+
+## Rendezvous Configuration Limitations
+
+### Current Implementation
+The current implementation provides **global rendezvous configuration** only:
+- All devices receive the same rendezvous instructions
+- Configuration is static and defined in config.yaml
+- No per-device or per-customer customization
+
+### Future Enhancements Needed
+For production deployments, consider implementing:
+- **Per-customer rendezvous**: Different RV info for different customers/resellers
+- **Dynamic rendezvous lookup**: Callback-based RV determination from external systems
+- **Device-specific routing**: RV info based on device serial, model, or order information
+- **Geographic routing**: Route devices to nearest or appropriate owner services
+- **Load balancing**: Multiple owner service endpoints with failover
+
+### Implementation Approach
+Advanced implementations should:
+1. Replace the global `RvInfo` function in main.go with callback-based logic
+2. Integrate with manufacturing execution systems (MES) for customer-specific routing
+3. Support external scripts or APIs for dynamic RV determination
+4. Provide fallback mechanisms for when external systems are unavailable 
