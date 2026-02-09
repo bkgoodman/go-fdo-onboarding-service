@@ -37,7 +37,7 @@ type Config struct {
 		DeviceCAKeyType      string `yaml:"device_ca_key_type"`
 		OwnerKeyType         string `yaml:"owner_key_type"`
 		GenerateCertificates bool   `yaml:"generate_certificates"`
-		FirstTimeInit        bool   `yaml:"first_time_init"`
+		InitKeysIfMissing    bool   `yaml:"init_keys_if_missing"`
 	} `yaml:"manufacturing"`
 
 	// Rendezvous configuration
@@ -105,6 +105,14 @@ type Config struct {
 
 	// Voucher management configuration
 	VoucherManagement VoucherConfig `yaml:"voucher_management"`
+
+	// Device storage configuration
+	DeviceStorage struct {
+		VoucherDir         string `yaml:"voucher_dir"`          // Directory for voucher files
+		ConfigDir          string `yaml:"config_dir"`           // Directory for device configs
+		DeleteAfterOnboard bool   `yaml:"delete_after_onboard"` // Delete voucher file after successful onboard
+		CacheConfigs       bool   `yaml:"cache_configs"`        // Cache parsed configs in database
+	} `yaml:"device_storage"`
 }
 
 // RendezvousEntry represents a single rendezvous endpoint
@@ -141,12 +149,12 @@ func DefaultConfig() *Config {
 			DeviceCAKeyType      string `yaml:"device_ca_key_type"`
 			OwnerKeyType         string `yaml:"owner_key_type"`
 			GenerateCertificates bool   `yaml:"generate_certificates"`
-			FirstTimeInit        bool   `yaml:"first_time_init"`
+			InitKeysIfMissing    bool   `yaml:"init_keys_if_missing"`
 		}{
 			DeviceCAKeyType:      "ec384",
 			OwnerKeyType:         "ec384",
 			GenerateCertificates: true,
-			FirstTimeInit:        false,
+			InitKeysIfMissing:    true,
 		},
 		Rendezvous: struct {
 			Entries []RendezvousEntry `yaml:"entries"`
@@ -237,13 +245,14 @@ func DefaultConfig() *Config {
 			OwnerChain:   "",
 		},
 		VoucherManagement: VoucherConfig{
-			PersistToDB: true,
+			PersistToDB:     true,
+			ReuseCredential: false,
 			VoucherSigning: VoucherSigningConfig{
-				Mode:            "internal",       // "internal" = default, "hsm" = external HSM
-				OwnerKeyType:    "ec384",          // for internal mode
-				FirstTimeInit:   true,             // for internal mode - create key on first boot
-				ExternalCommand: "",               // for hsm mode
-				ExternalTimeout: 30 * time.Second, // for hsm mode
+				Mode:              "internal",       // "internal" = default, "hsm" = external HSM
+				OwnerKeyType:      "ec384",          // for internal mode
+				InitKeysIfMissing: true,             // for internal mode - only create keys if they don't exist
+				ExternalCommand:   "",               // for hsm mode
+				ExternalTimeout:   30 * time.Second, // for hsm mode
 			},
 			OwnerSignover: struct {
 				Mode            string        `yaml:"mode"`              // "static" or "dynamic"
@@ -265,6 +274,17 @@ func DefaultConfig() *Config {
 				ExternalCommand: "",
 				Timeout:         30 * time.Second,
 			},
+		},
+		DeviceStorage: struct {
+			VoucherDir         string `yaml:"voucher_dir"`
+			ConfigDir          string `yaml:"config_dir"`
+			DeleteAfterOnboard bool   `yaml:"delete_after_onboard"`
+			CacheConfigs       bool   `yaml:"cache_configs"`
+		}{
+			VoucherDir:         "vouchers",
+			ConfigDir:          "configs",
+			DeleteAfterOnboard: false,
+			CacheConfigs:       false,
 		},
 	}
 }

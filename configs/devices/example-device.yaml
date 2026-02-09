@@ -1,0 +1,18 @@
+group: "fedora"  # Reference to group config
+
+fsim:
+  # Device-specific system configuration
+  sysconfig:
+    - "hostname=fedora-workstation-01"
+    - "ip_address=192.168.1.101"
+    - "timezone=America/New_York"
+  
+  # Device-specific credentials (passwords)
+  credentials:
+    - "password:localuser:device-specific-password"
+  
+  # Request SSH public keys from device (Registered Credentials flow)
+  # Format: type:credential_id[:endpoint_url]
+  # The device will generate and send its SSH public key
+  pubkey_requests:
+    - "ssh-rsa:device-admin-ssh-key"

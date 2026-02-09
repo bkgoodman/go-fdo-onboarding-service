@@ -1,0 +1,24 @@
+# Example Device Configuration Template
+# Copy this file to {GUID}.yaml where GUID is your device's GUID in hex format
+# Example: cp example-device-template.yaml abc123def456.yaml
+
+group: "example-fedora"  # Reference to group config (optional)
+
+fsim:
+  # Device-specific system configuration
+  sysconfig:
+    - "hostname=my-test-device"
+    - "ip_address=192.168.1.100"
+    - "timezone=America/New_York"
+    - "ssh_enabled=true"
+  
+  # Device-specific credentials (passwords)
+  credentials:
+    - "password:testuser:testpassword123"
+  
+  # Request SSH public keys from device (Registered Credentials flow)
+  # Format: type:credential_id[:endpoint_url]
+  # The device will generate and send its SSH public key
+  pubkey_requests:
+    - "ssh-rsa:admin-ssh-key"
+    - "ssh-rsa:backup-ssh-key:https://backup.example.com"

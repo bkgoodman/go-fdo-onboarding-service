@@ -43,5 +43,6 @@ rendezvous:
 # Voucher management configuration
 voucher_management:
   persist_to_db: true
+  reuse_credential: true
   voucher_signing:
     mode: ""

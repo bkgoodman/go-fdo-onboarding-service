@@ -1,0 +1,27 @@
+group_name: "fedora"
+description: "Fedora Workstation systems"
+
+fsim:
+  # Group-specific downloads
+  downloads:
+    - "scripts/fedora-setup.sh"
+  
+  # BMO image for Fedora systems
+  bmo_files:
+    - "application/x-iso9660-image:images/fedora-workstation-40.iso"
+  
+  # Fedora-specific system configuration
+  sysconfig:
+    - "selinux=enforcing"
+    - "firewalld=enabled"
+    - "package_manager=dnf"
+  
+  # Group-specific credentials (passwords)
+  credentials:
+    - "password:fedora-user:fedora-default-password"
+  
+  # Request SSH public keys from device (Registered Credentials flow)
+  # Format: type:credential_id[:endpoint_url]
+  # The device will generate and send its SSH public key
+  pubkey_requests:
+    - "ssh-rsa:fedora-admin-ssh-key"

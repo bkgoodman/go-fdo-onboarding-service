@@ -1,0 +1,56 @@
+debug: true
+
+server:
+  addr: "localhost:8080"
+  ext_addr: "localhost:8080"
+  use_tls: false
+
+database:
+  path: "fdo.db"
+  password: ""
+
+manufacturing:
+  init_keys_if_missing: true
+
+rendezvous:
+  entries:
+    - dns: "localhost"
+      port: 8080
+      protocol: "http"
+
+to0:
+  addr: ""
+  delay: 0
+  bypass: false
+  replacement_policy: "allow-any"
+
+delegate:
+  onboard: false
+  rv: false
+
+voucher_management:
+  reuse_credential: true
+
+device_storage:
+  voucher_dir: "vouchers"
+  config_dir: "configs"
+  delete_after_onboard: false
+  cache_configs: false
+
+fsim:
+  downloads: []
+  uploads: []
+  upload_dir: ""
+  wgets: []
+  sysconfig: []
+  payload_file: ""
+  payload_mime: ""
+  payload_files: []
+  bmo_file: ""
+  bmo_image_type: ""
+  bmo_files: []
+  wifi_config_file: ""
+  credentials: []
+  pubkey_requests: []
+  command_date: false
+  single_sided_wifi: false

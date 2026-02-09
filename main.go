@@ -16,10 +16,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
 	"iter"
 	"log"
 	"log/slog"
@@ -55,9 +53,12 @@ var config *Config
 
 // Command line flags
 var (
-	configPath = flag.String("config", "fdoserver.cfg", "Path to configuration file")
-	initOnly   = flag.Bool("init-only", false, "Initialize database and keys only, then exit")
-	debug      = flag.Bool("debug", false, "Enable debug logging")
+	configPath       = flag.String("config", "fdoserver.cfg", "Path to configuration file")
+	initOnly         = flag.Bool("init-only", false, "Initialize database and keys only, then exit")
+	debug            = flag.Bool("debug", false, "Enable debug logging")
+	generateOwnerKey = flag.Bool("generate-owner-key", false, "Generate new owner keys and exit")
+	printOwnerKey    = flag.Bool("print-owner-key", false, "Print owner public keys in PEM format and exit")
+	importOwnerKey   = flag.String("import-owner-key", "", "Import owner private key from PEM file and exit")
 )
 
 func main() {
@@ -78,7 +79,16 @@ func main() {
 		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	}
 
-	// Register DI event handler to print device GUID
+	// Handle key management flags
+	if *generateOwnerKey || *printOwnerKey || *importOwnerKey != "" {
+		if err := handleKeyManagement(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// Register event handler for DI and TO2 events
 	fdo.RegisterEventHandler(fdo.EventHandlerFunc(func(ctx context.Context, event fdo.Event) {
 		switch event.Type {
 		case fdo.EventTypeDIStarted:
@@ -108,6 +118,49 @@ func main() {
 			} else {
 				fmt.Printf("❌ DI Failed: %v\n", event.Error)
 			}
+
+		case fdo.EventTypeTO1BlobNotFound:
+			if event.GUID != nil {
+				fmt.Printf("❌ TO1 RV BLOB NOT FOUND: Device %x attempted rendezvous without RV blob\n", *event.GUID)
+				fmt.Printf("   Error: %v\n", event.Error)
+				fmt.Printf("   Device needs TO0 registration or direct TO2 onboarding\n")
+			}
+
+		case fdo.EventTypeTO2Started:
+			if event.GUID != nil {
+				fmt.Printf("🔐 TO2 Started: Device %x beginning onboarding\n", *event.GUID)
+			}
+
+		case fdo.EventTypeTO2VoucherNotFound:
+			if event.GUID != nil {
+				fmt.Printf("❌ TO2 VOUCHER NOT FOUND: Device %x attempted onboarding without valid voucher\n", *event.GUID)
+				fmt.Printf("   Error: %v\n", event.Error)
+				fmt.Printf("   Expected voucher file: %s/%x.fdoov\n", config.DeviceStorage.VoucherDir, *event.GUID)
+			}
+
+		case fdo.EventTypeTO2VoucherInvalid:
+			if event.GUID != nil {
+				fmt.Printf("❌ TO2 VOUCHER INVALID: Device %x has invalid voucher\n", *event.GUID)
+				if data, ok := event.Data.(fdo.VoucherInvalidReason); ok {
+					fmt.Printf("   Reason: %s\n", data.Reason)
+				}
+				fmt.Printf("   Error: %v\n", event.Error)
+				if data, ok := event.Data.(fdo.VoucherInvalidReason); ok && data.Reason == "zero_entries" {
+					fmt.Printf("   ⚠ Voucher has zero entries - needs to be extended by owner before onboarding\n")
+				}
+			}
+
+		case fdo.EventTypeTO2Completed:
+			if event.GUID != nil {
+				fmt.Printf("✅ TO2 Completed: Device %x successfully onboarded\n", *event.GUID)
+			}
+
+		case fdo.EventTypeTO2Failed:
+			if event.GUID != nil {
+				fmt.Printf("❌ TO2 Failed: Device %x - %v\n", *event.GUID, event.Error)
+			} else {
+				fmt.Printf("❌ TO2 Failed: %v\n", event.Error)
+			}
 		}
 	}))
 
@@ -128,6 +181,44 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// handleKeyManagement handles key management command-line flags
+func handleKeyManagement() error {
+	ctx := context.Background()
+
+	// Open database
+	state, err := sqlite.Open(config.Database.Path, config.Database.Password)
+	if err != nil {
+		return fmt.Errorf("error opening database: %w", err)
+	}
+	defer func() {
+		if err := state.Close(); err != nil {
+			slog.Error("Error closing database", "error", err)
+		}
+	}()
+
+	// Generate new owner keys
+	if *generateOwnerKey {
+		fmt.Println("Generating new owner keys...")
+		if err := generateOwnerKeys(state); err != nil {
+			return fmt.Errorf("error generating owner keys: %w", err)
+		}
+		fmt.Println("\n✓ Owner keys generated successfully")
+		return nil
+	}
+
+	// Print owner public keys
+	if *printOwnerKey {
+		return printOwnerPublicKeys(ctx, state)
+	}
+
+	// Import owner private key
+	if *importOwnerKey != "" {
+		return importOwnerPrivateKey(ctx, state, *importOwnerKey)
+	}
+
+	return nil
 }
 
 // handleSpecialOperations handles operations like printing keys, importing vouchers, etc.
@@ -171,9 +262,6 @@ func handleSpecialOperations() error {
 }
 
 func runServer(ctx context.Context) error {
-	// Check if database exists
-	_, dbStatErr := os.Stat(config.Database.Path)
-
 	// Open database
 	state, err := sqlite.Open(config.Database.Path, config.Database.Password)
 	if err != nil {
@@ -185,13 +273,47 @@ func runServer(ctx context.Context) error {
 		}
 	}()
 
-	// Generate keys if first-time init or database doesn't exist
-	if config.Manufacturing.FirstTimeInit || errors.Is(dbStatErr, fs.ErrNotExist) {
-		fmt.Println("Initializing manufacturing station keys...")
-		if err := generateKeys(state); err != nil {
-			return fmt.Errorf("error generating keys: %w", err)
+	// Initialize device metadata table
+	if err := InitDeviceMetadataTable(state.DB()); err != nil {
+		return fmt.Errorf("error initializing device metadata table: %w", err)
+	}
+
+	// Create vouchers and configs directories if they don't exist
+	if err := os.MkdirAll(config.DeviceStorage.VoucherDir, 0755); err != nil {
+		return fmt.Errorf("error creating voucher directory: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(config.DeviceStorage.ConfigDir, "devices"), 0755); err != nil {
+		return fmt.Errorf("error creating device config directory: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(config.DeviceStorage.ConfigDir, "groups"), 0755); err != nil {
+		return fmt.Errorf("error creating group config directory: %w", err)
+	}
+
+	// Create device storage manager
+	deviceStorage := &DeviceStorageManager{
+		VoucherDir: config.DeviceStorage.VoucherDir,
+		ConfigDir:  config.DeviceStorage.ConfigDir,
+		DB:         state,
+		Config:     config,
+	}
+
+	// Generate keys if configured and keys don't exist in database
+	if config.Manufacturing.InitKeysIfMissing {
+		// Check if owner keys already exist
+		ctx := context.Background()
+		_, _, err := state.OwnerKey(ctx, protocol.Rsa2048RestrKeyType, 2048)
+		keysExist := (err == nil)
+
+		if !keysExist {
+			log.Printf("Owner keys not found in database (error: %v), initializing...", err)
+			fmt.Println("Initializing manufacturing station keys...")
+			if err := generateKeys(state); err != nil {
+				return fmt.Errorf("error generating keys: %w", err)
+			}
+			fmt.Println("Manufacturing station initialization completed")
+		} else {
+			log.Printf("✓ Owner keys found in database, skipping key generation")
 		}
-		fmt.Println("Manufacturing station initialization completed")
 	}
 
 	// If init-only mode, exit after key generation
@@ -219,7 +341,7 @@ func runServer(ctx context.Context) error {
 	}
 
 	// Start the main server
-	return startServer(ctx, state)
+	return startServer(ctx, state, deviceStorage)
 }
 
 func generateKeys(state *sqlite.DB) error {
@@ -351,7 +473,214 @@ func generateKeys(state *sqlite.DB) error {
 		return err
 	}
 
+	// Print owner public keys in PEM format for DI usage
+	fmt.Println("\n========================================")
+	fmt.Println("OWNER PUBLIC KEYS (PEM Format)")
+	fmt.Println("========================================")
+	fmt.Println("\nUse these keys in your DI manufacturing station config (owner_signover.static_public_key):\n")
+
+	// Helper to encode public key as PEM
+	encodePEM := func(key crypto.PublicKey, label string) error {
+		der, err := x509.MarshalPKIXPublicKey(key)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("--- %s ---\n", label)
+		if err := pem.Encode(os.Stdout, &pem.Block{
+			Type:  "PUBLIC KEY",
+			Bytes: der,
+		}); err != nil {
+			return err
+		}
+		fmt.Println()
+		return nil
+	}
+
+	if err := encodePEM(rsa2048OwnerKey.Public(), "RSA2048"); err != nil {
+		return err
+	}
+	if err := encodePEM(rsa3072OwnerKey.Public(), "RSA3072"); err != nil {
+		return err
+	}
+	if err := encodePEM(ec256OwnerKey.Public(), "SECP256R1"); err != nil {
+		return err
+	}
+	if err := encodePEM(ec384OwnerKey.Public(), "SECP384R1"); err != nil {
+		return err
+	}
+
+	fmt.Println("========================================")
+	fmt.Println("Copy one of the above keys (including BEGIN/END lines) into your")
+	fmt.Println("DI manufacturing station config at: owner_signover.static_public_key")
+	fmt.Println("========================================")
+
 	fmt.Println("All keys generated successfully")
+	return nil
+}
+
+// generateOwnerKeys generates only owner keys (without manufacturing keys)
+func generateOwnerKeys(state *sqlite.DB) error {
+	ctx := context.Background()
+
+	// Generate owner keys
+	rsa2048OwnerKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+	rsa3072OwnerKey, err := rsa.GenerateKey(rand.Reader, 3072)
+	if err != nil {
+		return err
+	}
+	ec256OwnerKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	ec384OwnerKey, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		return err
+	}
+
+	// Add owner keys to database
+	if err := state.AddOwnerKey(protocol.Rsa2048RestrKeyType, rsa2048OwnerKey, nil); err != nil {
+		return err
+	}
+	if err := state.AddOwnerKey(protocol.RsaPkcsKeyType, rsa3072OwnerKey, nil); err != nil {
+		return err
+	}
+	if err := state.AddOwnerKey(protocol.RsaPssKeyType, rsa3072OwnerKey, nil); err != nil {
+		return err
+	}
+	if err := state.AddOwnerKey(protocol.Secp256r1KeyType, ec256OwnerKey, nil); err != nil {
+		return err
+	}
+	if err := state.AddOwnerKey(protocol.Secp384r1KeyType, ec384OwnerKey, nil); err != nil {
+		return err
+	}
+
+	// Print owner public keys in PEM format
+	return printOwnerPublicKeys(ctx, state)
+}
+
+// printOwnerPublicKeys prints all owner public keys in PEM format
+func printOwnerPublicKeys(ctx context.Context, state *sqlite.DB) error {
+	fmt.Println("\n========================================")
+	fmt.Println("OWNER PUBLIC KEYS (PEM Format)")
+	fmt.Println("========================================")
+	fmt.Println("\nUse these keys in your DI manufacturing station config (owner_signover.static_public_key):\n")
+
+	// Helper to encode public key as PEM
+	encodePEM := func(key crypto.PublicKey, label string) error {
+		der, err := x509.MarshalPKIXPublicKey(key)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("--- %s ---\n", label)
+		if err := pem.Encode(os.Stdout, &pem.Block{
+			Type:  "PUBLIC KEY",
+			Bytes: der,
+		}); err != nil {
+			return err
+		}
+		fmt.Println()
+		return nil
+	}
+
+	// Get and print each key type
+	keyTypes := []struct {
+		keyType protocol.KeyType
+		label   string
+	}{
+		{protocol.Rsa2048RestrKeyType, "RSA2048"},
+		{protocol.RsaPkcsKeyType, "RSA3072"},
+		{protocol.Secp256r1KeyType, "SECP256R1"},
+		{protocol.Secp384r1KeyType, "SECP384R1"},
+	}
+
+	for _, kt := range keyTypes {
+		key, _, err := state.OwnerKey(ctx, kt.keyType, 3072)
+		if err != nil {
+			fmt.Printf("Warning: Could not retrieve %s key: %v\n", kt.label, err)
+			continue
+		}
+		if err := encodePEM(key.Public(), kt.label); err != nil {
+			return err
+		}
+	}
+
+	fmt.Println("========================================")
+	fmt.Println("Copy one of the above keys (including BEGIN/END lines) into your")
+	fmt.Println("DI manufacturing station config at: owner_signover.static_public_key")
+	fmt.Println("========================================")
+
+	return nil
+}
+
+// importOwnerPrivateKey imports an owner private key from a PEM file
+func importOwnerPrivateKey(ctx context.Context, state *sqlite.DB, pemFile string) error {
+	// Read PEM file
+	pemData, err := os.ReadFile(pemFile)
+	if err != nil {
+		return fmt.Errorf("error reading PEM file: %w", err)
+	}
+
+	// Decode PEM block
+	block, _ := pem.Decode(pemData)
+	if block == nil {
+		return fmt.Errorf("failed to decode PEM block")
+	}
+
+	// Parse private key
+	var privKey crypto.Signer
+	var keyType protocol.KeyType
+
+	// Try parsing as different key types
+	if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		switch k := key.(type) {
+		case *rsa.PrivateKey:
+			privKey = k
+			if k.N.BitLen() == 2048 {
+				keyType = protocol.Rsa2048RestrKeyType
+			} else {
+				keyType = protocol.RsaPkcsKeyType
+			}
+		case *ecdsa.PrivateKey:
+			privKey = k
+			if k.Curve == elliptic.P256() {
+				keyType = protocol.Secp256r1KeyType
+			} else if k.Curve == elliptic.P384() {
+				keyType = protocol.Secp384r1KeyType
+			} else {
+				return fmt.Errorf("unsupported EC curve")
+			}
+		default:
+			return fmt.Errorf("unsupported key type in PKCS8")
+		}
+	} else if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		privKey = key
+		if key.N.BitLen() == 2048 {
+			keyType = protocol.Rsa2048RestrKeyType
+		} else {
+			keyType = protocol.RsaPkcsKeyType
+		}
+	} else if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
+		privKey = key
+		if key.Curve == elliptic.P256() {
+			keyType = protocol.Secp256r1KeyType
+		} else if key.Curve == elliptic.P384() {
+			keyType = protocol.Secp384r1KeyType
+		} else {
+			return fmt.Errorf("unsupported EC curve")
+		}
+	} else {
+		return fmt.Errorf("failed to parse private key")
+	}
+
+	// Add to database
+	if err := state.AddOwnerKey(keyType, privKey, nil); err != nil {
+		return fmt.Errorf("error adding owner key to database: %w", err)
+	}
+
+	fmt.Printf("✓ Successfully imported %s owner private key\n", keyType)
 	return nil
 }
 
@@ -395,7 +724,7 @@ func validateFiles() error {
 	return nil
 }
 
-func startServer(ctx context.Context, state *sqlite.DB) error {
+func startServer(ctx context.Context, state *sqlite.DB, deviceStorage *DeviceStorageManager) error {
 	// Normalize address
 	extAddr := config.Server.ExtAddr
 	if extAddr == "" {
@@ -423,7 +752,7 @@ func startServer(ctx context.Context, state *sqlite.DB) error {
 	rvInfo = append([][]protocol.RvInstruction{{{Variable: protocol.RVDelaysec, Value: mustMarshal(config.TO0.Delay)}}}, rvInfo...)
 
 	// Create FDO responder
-	handler, err := newHandler(ctx, rvInfo, state, replacementPolicy)
+	handler, err := newHandler(ctx, rvInfo, state, deviceStorage, replacementPolicy)
 	if err != nil {
 		return err
 	}
@@ -851,7 +1180,7 @@ func loadWiFiConfig(filePath string) (*fsim.WiFiOwner, error) {
 }
 
 // newHandler creates the FDO handler with all functionality
-func newHandler(ctx context.Context, rvInfo [][]protocol.RvInstruction, state *sqlite.DB, replacementPolicy fdo.VoucherReplacementPolicy) (*transport.Handler, error) {
+func newHandler(ctx context.Context, rvInfo [][]protocol.RvInstruction, state *sqlite.DB, deviceStorage *DeviceStorageManager, replacementPolicy fdo.VoucherReplacementPolicy) (*transport.Handler, error) {
 	aio := fdo.AllInOne{
 		DIAndOwner:         state,
 		RendezvousAndOwner: withOwnerAddrs{state, rvInfo},
@@ -875,7 +1204,7 @@ func newHandler(ctx context.Context, rvInfo [][]protocol.RvInstruction, state *s
 		Tokens: state,
 		DIResponder: &fdo.DIServer[custom.DeviceMfgInfo]{
 			Session:               state,
-			Vouchers:              state,
+			Vouchers:              deviceStorage, // Use deviceStorage for voucher operations
 			SignDeviceCertificate: custom.SignDeviceCertificate(deviceCAKey, deviceCAChain),
 			DeviceInfo: func(ctx context.Context, info *custom.DeviceMfgInfo, _ []*x509.Certificate) (string, protocol.PublicKey, error) {
 				// Always use RSA 3072 for non 2048 restricted key type. In a
@@ -907,14 +1236,14 @@ func newHandler(ctx context.Context, rvInfo [][]protocol.RvInstruction, state *s
 		},
 		TO2Responder: &fdo.TO2Server{
 			Session:         state,
-			Modules:         moduleStateMachines{DB: state, states: make(map[string]*moduleStateMachineState)},
-			Vouchers:        state,
+			Modules:         moduleStateMachines{DB: state, DeviceStorage: deviceStorage, states: make(map[string]*moduleStateMachineState)},
+			Vouchers:        deviceStorage, // Use deviceStorage for voucher operations
 			OwnerKeys:       state,
 			DelegateKeys:    state,
 			RvInfo:          func(context.Context, fdo.Voucher) ([][]protocol.RvInstruction, error) { return rvInfo, nil },
 			OnboardDelegate: config.Delegate.Onboard,
 			RvDelegate:      config.Delegate.RV,
-			ReuseCredential: func(context.Context, fdo.Voucher) (bool, error) { return false, nil }, // TODO: Add config for reuse credential
+			ReuseCredential: func(context.Context, fdo.Voucher) (bool, error) { return config.VoucherManagement.ReuseCredential, nil },
 			SingleSidedMode: config.FSIM.SingleSidedWiFi,
 		},
 	}, nil
@@ -979,7 +1308,8 @@ func encodePublicKey(keyType protocol.KeyType, keyEncoding protocol.KeyEncoding,
 }
 
 type moduleStateMachines struct {
-	DB *sqlite.DB
+	DB            *sqlite.DB
+	DeviceStorage *DeviceStorageManager
 	// current module state machine state for all sessions (indexed by token)
 	states map[string]*moduleStateMachineState
 }
@@ -1011,11 +1341,17 @@ func (s moduleStateMachines) NextModule(ctx context.Context) (bool, error) {
 	module, ok := s.states[token]
 	if !ok {
 		// Create a new module state machine
+		// Get GUID from session for device-specific config
+		guid, err := s.DB.GUID(ctx)
+		if err != nil {
+			return false, fmt.Errorf("error getting GUID: %w", err)
+		}
+
 		_, modules, _, err := s.DB.Devmod(ctx)
 		if err != nil {
 			return false, fmt.Errorf("error getting devmod: %w", err)
 		}
-		next, stop := iter.Pull2(ownerModules(modules))
+		next, stop := iter.Pull2(ownerModules(ctx, guid, s.DeviceStorage, modules))
 		module = &moduleStateMachineState{
 			Next: next,
 			Stop: stop,
@@ -1041,10 +1377,18 @@ func (s moduleStateMachines) CleanupModules(ctx context.Context) {
 	delete(s.states, token)
 }
 
-func ownerModules(modules []string) iter.Seq2[string, serviceinfo.OwnerModule] { //nolint:gocyclo
+func ownerModules(ctx context.Context, guid protocol.GUID, deviceStorage *DeviceStorageManager, modules []string) iter.Seq2[string, serviceinfo.OwnerModule] { //nolint:gocyclo
 	return func(yield func(string, serviceinfo.OwnerModule) bool) {
+		// Load device-specific configuration
+		fsimConfig, err := deviceStorage.LoadDeviceConfig(ctx, guid)
+		if err != nil {
+			// Fall back to global config if device config fails to load
+			log.Printf("Warning: Failed to load device config for %s, using global config: %v", hex.EncodeToString(guid[:]), err)
+			fsimConfig = deviceStorage.configToFSIM(&config.FSIM)
+		}
+
 		if slices.Contains(modules, "fdo.download") {
-			for _, name := range config.FSIM.Downloads {
+			for _, name := range fsimConfig.Downloads {
 				f, err := os.Open(filepath.Clean(name))
 				if err != nil {
 					log.Fatalf("error opening %q for download FSIM: %v", name, err)
@@ -1062,9 +1406,9 @@ func ownerModules(modules []string) iter.Seq2[string, serviceinfo.OwnerModule] {
 		}
 
 		if slices.Contains(modules, "fdo.upload") {
-			for _, name := range config.FSIM.Uploads {
+			for _, name := range fsimConfig.Uploads {
 				if !yield("fdo.upload", &fsim.UploadRequest{
-					Dir:  config.FSIM.UploadDir,
+					Dir:  fsimConfig.UploadDir,
 					Name: name,
 				}) {
 					return
@@ -1073,7 +1417,7 @@ func ownerModules(modules []string) iter.Seq2[string, serviceinfo.OwnerModule] {
 		}
 
 		if slices.Contains(modules, "fdo.wget") {
-			for _, urlString := range config.FSIM.Wgets {
+			for _, urlString := range fsimConfig.Wgets {
 				url, err := url.Parse(urlString)
 				if err != nil || url.Path == "" {
 					continue
@@ -1087,9 +1431,9 @@ func ownerModules(modules []string) iter.Seq2[string, serviceinfo.OwnerModule] {
 			}
 		}
 
-		if slices.Contains(modules, "fdo.sysconfig") && len(config.FSIM.Sysconfig) > 0 {
+		if slices.Contains(modules, "fdo.sysconfig") && len(fsimConfig.Sysconfig) > 0 {
 			sysconfigOwner := &fsim.SysConfigOwner{}
-			for _, param := range config.FSIM.Sysconfig {
+			for _, param := range fsimConfig.Sysconfig {
 				parts := strings.SplitN(param, "=", 2)
 				if len(parts) != 2 {
 					log.Fatalf("invalid sysconfig parameter %q: expected key=value format", param)
@@ -1101,12 +1445,12 @@ func ownerModules(modules []string) iter.Seq2[string, serviceinfo.OwnerModule] {
 			}
 		}
 
-		if slices.Contains(modules, "fdo.payload") && (config.FSIM.PayloadFile != "" || len(config.FSIM.PayloadFiles) > 0) {
+		if slices.Contains(modules, "fdo.payload") && (fsimConfig.PayloadFile != "" || len(fsimConfig.PayloadFiles) > 0) {
 			payloadOwner := &fsim.PayloadOwner{}
 
 			// Handle multi-file NAK testing mode (with RequireAck)
-			if len(config.FSIM.PayloadFiles) > 0 {
-				for _, payloadSpec := range config.FSIM.PayloadFiles {
+			if len(fsimConfig.PayloadFiles) > 0 {
+				for _, payloadSpec := range fsimConfig.PayloadFiles {
 					parts := strings.SplitN(payloadSpec, ":", 2)
 					if len(parts) != 2 {
 						log.Fatalf("invalid payload specification %q: expected type:file format", payloadSpec)
@@ -1121,11 +1465,11 @@ func ownerModules(modules []string) iter.Seq2[string, serviceinfo.OwnerModule] {
 				}
 			} else {
 				// Single file mode (no RequireAck)
-				data, err := os.ReadFile(config.FSIM.PayloadFile)
+				data, err := os.ReadFile(fsimConfig.PayloadFile)
 				if err != nil {
-					log.Fatalf("error reading payload file %q: %v", config.FSIM.PayloadFile, err)
+					log.Fatalf("error reading payload file %q: %v", fsimConfig.PayloadFile, err)
 				}
-				payloadOwner.AddPayload(config.FSIM.PayloadMime, filepath.Base(config.FSIM.PayloadFile), data, nil)
+				payloadOwner.AddPayload(fsimConfig.PayloadMime, filepath.Base(fsimConfig.PayloadFile), data, nil)
 			}
 
 			if !yield("fdo.payload", payloadOwner) {
@@ -1133,12 +1477,12 @@ func ownerModules(modules []string) iter.Seq2[string, serviceinfo.OwnerModule] {
 			}
 		}
 
-		if slices.Contains(modules, "fdo.bmo") && (config.FSIM.BMOFile != "" || len(config.FSIM.BMOFiles) > 0) {
+		if slices.Contains(modules, "fdo.bmo") && (fsimConfig.BMOFile != "" || len(fsimConfig.BMOFiles) > 0) {
 			bmoOwner := &fsim.BMOOwner{}
 
 			// Handle multi-file NAK testing mode (with RequireAck)
-			if len(config.FSIM.BMOFiles) > 0 {
-				for _, bmoSpec := range config.FSIM.BMOFiles {
+			if len(fsimConfig.BMOFiles) > 0 {
+				for _, bmoSpec := range fsimConfig.BMOFiles {
 					parts := strings.SplitN(bmoSpec, ":", 2)
 					if len(parts) != 2 {
 						log.Fatalf("invalid BMO specification %q: expected type:file format", bmoSpec)
@@ -1153,11 +1497,11 @@ func ownerModules(modules []string) iter.Seq2[string, serviceinfo.OwnerModule] {
 				}
 			} else {
 				// Single file mode (no RequireAck)
-				data, err := os.ReadFile(config.FSIM.BMOFile)
+				data, err := os.ReadFile(fsimConfig.BMOFile)
 				if err != nil {
-					log.Fatalf("error reading BMO file %q: %v", config.FSIM.BMOFile, err)
+					log.Fatalf("error reading BMO file %q: %v", fsimConfig.BMOFile, err)
 				}
-				bmoOwner.AddImage(config.FSIM.BMOImageType, filepath.Base(config.FSIM.BMOFile), data, nil)
+				bmoOwner.AddImage(fsimConfig.BMOImageType, filepath.Base(fsimConfig.BMOFile), data, nil)
 			}
 
 			if !yield("fdo.bmo", bmoOwner) {
@@ -1165,10 +1509,10 @@ func ownerModules(modules []string) iter.Seq2[string, serviceinfo.OwnerModule] {
 			}
 		}
 
-		if slices.Contains(modules, "fdo.wifi") && config.FSIM.WiFiConfigFile != "" {
-			wifiOwner, err := loadWiFiConfig(config.FSIM.WiFiConfigFile)
+		if slices.Contains(modules, "fdo.wifi") && fsimConfig.WiFiConfigFile != "" {
+			wifiOwner, err := loadWiFiConfig(fsimConfig.WiFiConfigFile)
 			if err != nil {
-				log.Fatalf("error loading WiFi config from %q: %v", config.FSIM.WiFiConfigFile, err)
+				log.Fatalf("error loading WiFi config from %q: %v", fsimConfig.WiFiConfigFile, err)
 			}
 			if !yield("fdo.wifi", wifiOwner) {
 				return
@@ -1177,7 +1521,7 @@ func ownerModules(modules []string) iter.Seq2[string, serviceinfo.OwnerModule] {
 
 		if slices.Contains(modules, "fdo.credentials") {
 			var provisionedCreds []fsim.ProvisionedCredential
-			for _, credSpec := range config.FSIM.Credentials {
+			for _, credSpec := range fsimConfig.Credentials {
 				parts := strings.SplitN(credSpec, ":", 4)
 				if len(parts) < 3 {
 					log.Fatalf("invalid credential specification %q: expected type:id:data[:endpoint_url] format", credSpec)
@@ -1226,7 +1570,7 @@ func ownerModules(modules []string) iter.Seq2[string, serviceinfo.OwnerModule] {
 			credentialsOwner := fsim.NewCredentialsOwner(provisionedCreds)
 
 			// Add public key requests (Registered Credentials flow)
-			for _, reqSpec := range config.FSIM.PubkeyRequests {
+			for _, reqSpec := range fsimConfig.PubkeyRequests {
 				parts := strings.SplitN(reqSpec, ":", 3)
 				if len(parts) < 2 {
 					log.Fatalf("invalid pubkey request specification %q: expected type:id[:endpoint_url] format", reqSpec)

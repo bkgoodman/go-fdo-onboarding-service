@@ -1,0 +1,13 @@
+group_name: "fedora"
+description: "Fedora Workstation systems"
+
+fsim:
+  # Group-specific system configuration
+  sysconfig:
+    - "selinux=enforcing"
+    - "firewalld=enabled"
+    - "package_manager=dnf"
+  
+  # Group-specific credentials
+  credentials:
+    - "password:admin:group-admin-password"

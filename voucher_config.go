@@ -12,7 +12,7 @@ import (
 type VoucherSigningConfig struct {
 	Mode                      string        `yaml:"mode"`                         // "internal" | "external"
 	OwnerKeyType              string        `yaml:"owner_key_type"`               // for internal mode
-	FirstTimeInit             bool          `yaml:"first_time_init"`              // for internal mode
+	InitKeysIfMissing         bool          `yaml:"init_keys_if_missing"`         // for internal mode - only create keys if they don't exist
 	ExternalCommand           string        `yaml:"external_command"`             // for external mode
 	ExternalTimeout           time.Duration `yaml:"external_timeout"`             // for external mode
 	ManufacturerPublicKeyFile string        `yaml:"manufacturer_public_key_file"` // PEM file with manufacturer public key
@@ -28,6 +28,9 @@ type OVEExtraDataConfig struct {
 // VoucherConfig contains configuration for voucher management
 type VoucherConfig struct {
 	PersistToDB bool `yaml:"persist_to_db"`
+
+	// Credential reuse: false = device can only onboard once, true = allows re-onboarding
+	ReuseCredential bool `yaml:"reuse_credential"`
 
 	// New voucher signing configuration
 	VoucherSigning VoucherSigningConfig `yaml:"voucher_signing"`
