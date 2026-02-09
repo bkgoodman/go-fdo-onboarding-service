@@ -1,4 +1,4 @@
-time=2026-02-09T18:43:49.880Z level=INFO msg="Owner keys not found in database (error: error querying owner key [type=RSA 2048 with restricted key/exponent (PKCS1 1.5 encoding),size=2048]: not found), initializing..."
+time=2026-02-09T20:27:53.441Z level=INFO msg="Owner keys not found in database (error: error querying owner key [type=RSA 2048 with restricted key/exponent (PKCS1 1.5 encoding),size=2048]: not found), initializing..."
 Initializing manufacturing station keys...
 
 ========================================
@@ -9,39 +9,39 @@ Use these keys in your DI manufacturing station config (owner_signover.static_pu
 
 --- RSA2048 ---
 -----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvcYt6op3iRdHqEqdX1lP
-/M++1C8p+CLjARaFFgB5dIuLVdGD8kx1ynICQHFSQ2b3Ii7WQOdlhwKRG+U6a3WX
-/HaPUXj1TKj1+UoREj+wFBW/nG1+/9ubIVpk4bstSm8Ze39ppCa+eHOD5Jc1w0iy
-Qjqjz4vu56a2ZHtYWx5igJBbnXJ+2onIPkWJ2S20tFtKMqguv0tGuEsVku+0rLeR
-9YTJ7nVBio2dTidLCIrr1qajTtWWE5V+Dt482+dULqZjXo/+RabqdJ9EdvwX8JOE
-rXtWmC8Qvq3+htkI20WVkDiD/epAW7yykR4CqpSw9ss1e3/Xn7Uc1tG1wPZ/UyDV
-bwIDAQAB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzbe8h93N9mwdcu1P9jDp
+2AAShwahWWL8p+G6WeydETogT0dlWMZ4Z9Hdtj/1Lgw8wHtTNP56/Z28MDZf3jaG
+KRBYFKJR31HU2aKICtgNgqfm/s5nOne5T3cERUCr1FyKjeg6z/ICvpmNb8dAjk+j
+5TESXM4/a+LAuouS5KNa76jeeCFNfmSyHWPIDpV3JMogrUEQPf8uB2pMZY4SnlMi
+43rAzfz9M9UA4mKct4rIbgDkGFrJ7Ngwx46hmNAPeA1Ev9i32uqhssidj4q9GQZb
+CH406uBtTEOD9CU0IhEgee7Ry9tRWKBPnNBzlXVyvBq3e3HHBjclguFBwdpr4uv8
+FwIDAQAB
 -----END PUBLIC KEY-----
 
 --- RSA3072 ---
 -----BEGIN PUBLIC KEY-----
-MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAvROqCWDk7ENPX+1Yp6Jz
-MhklvZiW4oE2spgQ24fs2ch4qJMcZy1IaBfJbscbZ6EAxBZDv9O6DUbMEgudOtsT
-an7Rj8LxCSd/SKIekwzlcgX+yOUG9E+56vBgkujrK+1h/uMjn9jUIwwbhitFt/yV
-bpXi274hAr0dirDTTLwxWtnAdyBbISy7WCXUrxfscv5tGrnpjPxFOY9hu6WdAGpk
-f/xmpXYcOBcU4qMEbXG9IAW4Xv1yhPOS90bo8jnhS/f0b7AFarVZnWrwEyu9GScD
-/xJXmbpkCQLfSLgUZn95/yCAQtFLwLONiyzLeJ6sumN7u81MLNXdgZZybi9vLbzh
-RpcGHxoYxz8VjI6OYf6fIfmSjXqXb70fsE2you581QX41Ntf9deEw5sxn4fVEkqq
-iJNq69x1sE0eMWiySiPUAXc2ebwx/c3eeJIokSwoCUyR+reTvo63cIc+O3Ujjzz7
-TNSeJgxebInM6j23dyYrZy1/ZJtBhNmcU7TPv4JviGo9AgMBAAE=
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAuHpm2Z7iGnPLdKfSOtyp
+55azWZBa0e1acsNkq0eR3WIviuGmkN58b1ypwpsmmH0Scj43Bsdm09Ynuiw/3Riu
+rXiM4jEvndik7Nm6s4cOM/nR3mu540E05YLWjBeJfSUufzqIG8B+J9iRyXoLZkZv
+ul0ynW7xPxAAu4q9AFEDrVx3fvkwFoYayaYE2h+jxGPhSyXqkzT5cC8ZIEYYgNgM
+Fed/Xb7QStsnCXZ8/zAUEv8ZrkWrFIZcLKFTHERiBZu49SAV1ahVYxG/l5eEvmiM
+XEr498p6J/D3es0oJHE5knY6W5/aG7ZZ5t3gGjOJkC0qZZ6X9TNU1CtlZUT3uYgl
+vq96hjqYf7FGxA+3L0Z1JSijIdESaFW7ZMbwGLgoNq2JqWwCZFvjTS1T9BEyGVIu
+Zd58s7v15NOpELAtkAQ5WlEbDNQ/bQCFXa0sFKVnkJ3NxogaXXbPyz74xGxD3eq9
+av2QDV/CyGLNLnAZlNnbiu2wi3Uip2K7uGkEpwTxA77/AgMBAAE=
 -----END PUBLIC KEY-----
 
 --- SECP256R1 ---
 -----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE01xR20IL6edAYJOC3pqD5uWGBo32
-G0EcM6E9Nm4XUeY8UY3IZ2JVgQdANoqVMPpj4pdBntYo/SJXhe74UWP0sw==
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKz8pMxD7CoI9r8F2YhCvqCFAGYx1
+rKzsJXf1WxKncaX/vmw7f3fgB4/dJ2vCIKBMe38fmTD8lCl8Pybz5ZXMog==
 -----END PUBLIC KEY-----
 
 --- SECP384R1 ---
 -----BEGIN PUBLIC KEY-----
-MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEK+EQEgF01Enb2uTMAAY660LeR5VgnnNg
-i26F55ClEhk+0q9K4S3OCmXrsU14eB2qJg+l2At6RFo/KxEx6kZ+nBCx6ZcYbYlO
-xGuarYJIghPIEsbyTKdETV5/rUQTR+9p
+MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAENE3An69NwI56HXVkLNxOXvPJuz9jQBmm
+1UQHR6dowJxZVGemIWK5xx9QZSt5ZkNNgUu1l+I9PMPuplzsnQrImWuSWpRjiSvo
+TA1KHKd7ZaGaLhgr43F3QL8LANQUb8+b
 -----END PUBLIC KEY-----
 
 ========================================

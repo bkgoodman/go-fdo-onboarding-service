@@ -1,4 +1,4 @@
-debug: true
+debug: false
 
 server:
   addr: "localhost:8080"
@@ -29,7 +29,10 @@ delegate:
   rv: false
 
 voucher_management:
+  persist_to_db: true
   reuse_credential: true
+  voucher_signing:
+    mode: ""
 
 device_storage:
   voucher_dir: "vouchers"
