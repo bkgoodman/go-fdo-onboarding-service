@@ -53,6 +53,18 @@ cp test_onboarding/configs/devices/example-device-template.yaml \
 
 See `TEST_SCRIPT_README.md` for detailed testing instructions.
 
+### End-to-End Integration Workflow
+
+To exercise the full Manufacturing Station → Onboarding Service → Device client flow,
+run the automated script from this repository:
+
+```bash
+./tests/test_e2e_integration.sh
+```
+
+All documentation for that workflow (phases, artifacts, troubleshooting, and
+extensions) lives alongside the script in `tests/README_E2E_TEST.md`.
+
 ## Setup
 
 ### Prerequisites
