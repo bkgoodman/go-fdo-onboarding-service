@@ -113,6 +113,9 @@ type Config struct {
 		DeleteAfterOnboard bool   `yaml:"delete_after_onboard"` // Delete voucher file after successful onboard
 		CacheConfigs       bool   `yaml:"cache_configs"`        // Cache parsed configs in database
 	} `yaml:"device_storage"`
+
+	// Voucher receiver configuration
+	VoucherReceiver VoucherReceiverConfig `yaml:"voucher_receiver"`
 }
 
 // RendezvousEntry represents a single rendezvous endpoint
@@ -285,6 +288,13 @@ func DefaultConfig() *Config {
 			ConfigDir:          "configs",
 			DeleteAfterOnboard: false,
 			CacheConfigs:       false,
+		},
+		VoucherReceiver: VoucherReceiverConfig{
+			Enabled:           false,
+			Endpoint:          "/api/v1/vouchers",
+			GlobalToken:       "",
+			ValidateOwnership: true,
+			RequireAuth:       true,
 		},
 	}
 }

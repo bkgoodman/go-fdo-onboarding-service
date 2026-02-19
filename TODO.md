@@ -43,6 +43,8 @@
 - Better error messages for external command failures
 - Timeout handling improvements
 - Retry logic for external service calls
+- Make sure all tests are executed in "run_all_tests.sh"
+- Positive and negative tests (voucher rejected because bad token, bad owner, etc)
 
 ### 4. Add Configuration Validation
 

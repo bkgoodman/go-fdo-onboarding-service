@@ -59,6 +59,12 @@ var (
 	generateOwnerKey = flag.Bool("generate-owner-key", false, "Generate new owner keys and exit")
 	printOwnerKey    = flag.Bool("print-owner-key", false, "Print owner public keys in PEM format and exit")
 	importOwnerKey   = flag.String("import-owner-key", "", "Import owner private key from PEM file and exit")
+
+	// Voucher receiver token management flags
+	listReceiverTokens   = flag.Bool("list-receiver-tokens", false, "List all voucher receiver tokens and exit")
+	addReceiverToken     = flag.String("add-receiver-token", "", "Add voucher receiver token: '<token> <description> <expires_hours>' and exit")
+	deleteReceiverToken  = flag.String("delete-receiver-token", "", "Delete voucher receiver token and exit")
+	cleanupExpiredTokens = flag.Bool("cleanup-expired-tokens", false, "Remove expired voucher receiver tokens and exit")
 )
 
 func main() {
@@ -82,6 +88,15 @@ func main() {
 	// Handle key management flags
 	if *generateOwnerKey || *printOwnerKey || *importOwnerKey != "" {
 		if err := handleKeyManagement(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// Handle voucher receiver token management flags
+	if *listReceiverTokens || *addReceiverToken != "" || *deleteReceiverToken != "" || *cleanupExpiredTokens {
+		if err := handleReceiverTokenManagement(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -119,36 +134,36 @@ func main() {
 				fmt.Printf("❌ DI Failed: %v\n", event.Error)
 			}
 
-		case fdo.EventTypeTO1BlobNotFound:
-			if event.GUID != nil {
-				fmt.Printf("❌ TO1 RV BLOB NOT FOUND: Device %x attempted rendezvous without RV blob\n", *event.GUID)
-				fmt.Printf("   Error: %v\n", event.Error)
-				fmt.Printf("   Device needs TO0 registration or direct TO2 onboarding\n")
-			}
+		// case fdo.EventTypeTO1BlobNotFound:
+		// 	if event.GUID != nil {
+		// 		fmt.Printf("❌ TO1 RV BLOB NOT FOUND: Device %x attempted rendezvous without RV blob\n", *event.GUID)
+		// 		fmt.Printf("   Error: %v\n", event.Error)
+		// 		fmt.Printf("   Device needs TO0 registration or direct TO2 onboarding\n")
+		// 	}
 
 		case fdo.EventTypeTO2Started:
 			if event.GUID != nil {
 				fmt.Printf("🔐 TO2 Started: Device %x beginning onboarding\n", *event.GUID)
 			}
 
-		case fdo.EventTypeTO2VoucherNotFound:
-			if event.GUID != nil {
-				fmt.Printf("❌ TO2 VOUCHER NOT FOUND: Device %x attempted onboarding without valid voucher\n", *event.GUID)
-				fmt.Printf("   Error: %v\n", event.Error)
-				fmt.Printf("   Expected voucher file: %s/%x.fdoov\n", config.DeviceStorage.VoucherDir, *event.GUID)
-			}
+		// case fdo.EventTypeTO2VoucherNotFound:
+		// 	if event.GUID != nil {
+		// 		fmt.Printf("❌ TO2 VOUCHER NOT FOUND: Device %x attempted onboarding without valid voucher\n", *event.GUID)
+		// 		fmt.Printf("   Error: %v\n", event.Error)
+		// 		fmt.Printf("   Expected voucher file: %s/%x.fdoov\n", config.DeviceStorage.VoucherDir, *event.GUID)
+		// 	}
 
-		case fdo.EventTypeTO2VoucherInvalid:
-			if event.GUID != nil {
-				fmt.Printf("❌ TO2 VOUCHER INVALID: Device %x has invalid voucher\n", *event.GUID)
-				if data, ok := event.Data.(fdo.VoucherInvalidReason); ok {
-					fmt.Printf("   Reason: %s\n", data.Reason)
-				}
-				fmt.Printf("   Error: %v\n", event.Error)
-				if data, ok := event.Data.(fdo.VoucherInvalidReason); ok && data.Reason == "zero_entries" {
-					fmt.Printf("   ⚠ Voucher has zero entries - needs to be extended by owner before onboarding\n")
-				}
-			}
+		// case fdo.EventTypeTO2VoucherInvalid:
+		// 	if event.GUID != nil {
+		// 		fmt.Printf("❌ TO2 VOUCHER INVALID: Device %x has invalid voucher\n", *event.GUID)
+		// 		if data, ok := event.Data.(fdo.VoucherInvalidReason); ok {
+		// 			fmt.Printf("   Reason: %s\n", data.Reason)
+		// 		}
+		// 		fmt.Printf("   Error: %v\n", event.Error)
+		// 		if data, ok := event.Data.(fdo.VoucherInvalidReason); ok && data.Reason == "zero_entries" {
+		// 			fmt.Printf("   ⚠ Voucher has zero entries - needs to be extended by owner before onboarding\n")
+		// 		}
+		// 	}
 
 		case fdo.EventTypeTO2Completed:
 			if event.GUID != nil {
@@ -276,6 +291,14 @@ func runServer(ctx context.Context) error {
 	// Initialize device metadata table
 	if err := InitDeviceMetadataTable(state.DB()); err != nil {
 		return fmt.Errorf("error initializing device metadata table: %w", err)
+	}
+
+	// Initialize voucher receiver tables
+	if err := InitVoucherReceiverTokensTable(state.DB()); err != nil {
+		return fmt.Errorf("error initializing voucher receiver tokens table: %w", err)
+	}
+	if err := InitVoucherReceiverAuditTable(state.DB()); err != nil {
+		return fmt.Errorf("error initializing voucher receiver audit table: %w", err)
 	}
 
 	// Create vouchers and configs directories if they don't exist
@@ -477,7 +500,8 @@ func generateKeys(state *sqlite.DB) error {
 	fmt.Println("\n========================================")
 	fmt.Println("OWNER PUBLIC KEYS (PEM Format)")
 	fmt.Println("========================================")
-	fmt.Println("\nUse these keys in your DI manufacturing station config (owner_signover.static_public_key):\n")
+	fmt.Println("\nUse these keys in your DI manufacturing station config (owner_signover.static_public_key):")
+	fmt.Println()
 
 	// Helper to encode public key as PEM
 	encodePEM := func(key crypto.PublicKey, label string) error {
@@ -566,7 +590,8 @@ func printOwnerPublicKeys(ctx context.Context, state *sqlite.DB) error {
 	fmt.Println("\n========================================")
 	fmt.Println("OWNER PUBLIC KEYS (PEM Format)")
 	fmt.Println("========================================")
-	fmt.Println("\nUse these keys in your DI manufacturing station config (owner_signover.static_public_key):\n")
+	fmt.Println("\nUse these keys in your DI manufacturing station config (owner_signover.static_public_key):")
+	fmt.Println()
 
 	// Helper to encode public key as PEM
 	encodePEM := func(key crypto.PublicKey, label string) error {
@@ -607,6 +632,7 @@ func printOwnerPublicKeys(ctx context.Context, state *sqlite.DB) error {
 		}
 	}
 
+	fmt.Println()
 	fmt.Println("========================================")
 	fmt.Println("Copy one of the above keys (including BEGIN/END lines) into your")
 	fmt.Println("DI manufacturing station config at: owner_signover.static_public_key")
@@ -681,6 +707,145 @@ func importOwnerPrivateKey(ctx context.Context, state *sqlite.DB, pemFile string
 	}
 
 	fmt.Printf("✓ Successfully imported %s owner private key\n", keyType)
+	return nil
+}
+
+// handleReceiverTokenManagement handles voucher receiver token management CLI commands
+func handleReceiverTokenManagement() error {
+	ctx := context.Background()
+
+	// Open database
+	state, err := sqlite.Open(config.Database.Path, config.Database.Password)
+	if err != nil {
+		return fmt.Errorf("error opening database: %w", err)
+	}
+	defer func() {
+		if err := state.Close(); err != nil {
+			slog.Error("Error closing database", "error", err)
+		}
+	}()
+
+	// Initialize tables if needed
+	if err := InitVoucherReceiverTokensTable(state.DB()); err != nil {
+		return fmt.Errorf("error initializing receiver tokens table: %w", err)
+	}
+	if err := InitVoucherReceiverAuditTable(state.DB()); err != nil {
+		return fmt.Errorf("error initializing receiver audit table: %w", err)
+	}
+
+	tokenManager := NewVoucherReceiverTokenManager(state.DB())
+
+	// Handle list tokens
+	if *listReceiverTokens {
+		return doListReceiverTokens(ctx, tokenManager)
+	}
+
+	// Handle add token
+	if *addReceiverToken != "" {
+		return doAddReceiverToken(ctx, tokenManager, *addReceiverToken)
+	}
+
+	// Handle delete token
+	if *deleteReceiverToken != "" {
+		return doDeleteReceiverToken(ctx, tokenManager, *deleteReceiverToken)
+	}
+
+	// Handle cleanup expired tokens
+	if *cleanupExpiredTokens {
+		return doCleanupExpiredTokens(ctx, tokenManager)
+	}
+
+	return nil
+}
+
+// doListReceiverTokens lists all receiver tokens
+func doListReceiverTokens(ctx context.Context, tokenManager *VoucherReceiverTokenManager) error {
+	tokens, err := tokenManager.ListReceiverTokens(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list tokens: %w", err)
+	}
+
+	if len(tokens) == 0 {
+		fmt.Println("No voucher receiver tokens found.")
+		return nil
+	}
+
+	fmt.Printf("Voucher Receiver Tokens (%d total):\n\n", len(tokens))
+	for _, token := range tokens {
+		fmt.Printf("Token: %s\n", token.Token)
+		fmt.Printf("  Description: %s\n", token.Description)
+		fmt.Printf("  Created: %s\n", token.CreatedAt.Format(time.RFC3339))
+		if token.ExpiresAt != nil {
+			fmt.Printf("  Expires: %s", token.ExpiresAt.Format(time.RFC3339))
+			if token.IsExpired {
+				fmt.Printf(" (EXPIRED)")
+			}
+			fmt.Println()
+		} else {
+			fmt.Printf("  Expires: Never\n")
+		}
+		fmt.Println()
+	}
+
+	return nil
+}
+
+// doAddReceiverToken adds a new receiver token
+func doAddReceiverToken(ctx context.Context, tokenManager *VoucherReceiverTokenManager, argStr string) error {
+	// Parse arguments: <token> <description> <expires_hours>
+	parts := strings.Fields(argStr)
+	if len(parts) < 3 {
+		return fmt.Errorf("invalid arguments: expected '<token> <description> <expires_hours>'")
+	}
+
+	token := parts[0]
+	expiresHoursStr := parts[len(parts)-1]
+	description := strings.Join(parts[1:len(parts)-1], " ")
+
+	expiresHours, err := strconv.Atoi(expiresHoursStr)
+	if err != nil {
+		return fmt.Errorf("invalid expires_hours: %w", err)
+	}
+
+	if expiresHours < 0 {
+		return fmt.Errorf("expires_hours must be >= 0 (0 = never expires)")
+	}
+
+	if err := tokenManager.AddReceiverToken(ctx, token, description, expiresHours); err != nil {
+		return fmt.Errorf("failed to add token: %w", err)
+	}
+
+	fmt.Printf("✓ Successfully added voucher receiver token\n")
+	fmt.Printf("  Token: %s\n", token)
+	fmt.Printf("  Description: %s\n", description)
+	if expiresHours > 0 {
+		expiresAt := time.Now().Add(time.Duration(expiresHours) * time.Hour)
+		fmt.Printf("  Expires: %s (%d hours)\n", expiresAt.Format(time.RFC3339), expiresHours)
+	} else {
+		fmt.Printf("  Expires: Never\n")
+	}
+
+	return nil
+}
+
+// doDeleteReceiverToken deletes a receiver token
+func doDeleteReceiverToken(ctx context.Context, tokenManager *VoucherReceiverTokenManager, token string) error {
+	if err := tokenManager.DeleteReceiverToken(ctx, token); err != nil {
+		return fmt.Errorf("failed to delete token: %w", err)
+	}
+
+	fmt.Printf("✓ Successfully deleted voucher receiver token: %s\n", token)
+	return nil
+}
+
+// doCleanupExpiredTokens removes all expired tokens
+func doCleanupExpiredTokens(ctx context.Context, tokenManager *VoucherReceiverTokenManager) error {
+	count, err := tokenManager.CleanupExpiredTokens(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to cleanup expired tokens: %w", err)
+	}
+
+	fmt.Printf("✓ Cleaned up %d expired voucher receiver token(s)\n", count)
 	return nil
 }
 
@@ -760,6 +925,17 @@ func startServer(ctx context.Context, state *sqlite.DB, deviceStorage *DeviceSto
 	// Set up HTTP server
 	mux := http.NewServeMux()
 	mux.Handle("POST /fdo/{fdoVer}/msg/{msg}", handler)
+
+	// Add voucher receiver endpoint if enabled
+	if config.VoucherReceiver.Enabled {
+		tokenManager := NewVoucherReceiverTokenManager(state.DB())
+		voucherHandler := NewVoucherReceiverHandler(config, state, tokenManager, deviceStorage)
+		mux.Handle("POST "+config.VoucherReceiver.Endpoint, voucherHandler)
+		slog.Info("Voucher receiver enabled",
+			"endpoint", config.VoucherReceiver.Endpoint,
+			"validate_ownership", config.VoucherReceiver.ValidateOwnership,
+			"require_auth", config.VoucherReceiver.RequireAuth)
+	}
 
 	srv := &http.Server{
 		Addr:              config.Server.Addr,

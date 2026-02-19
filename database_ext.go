@@ -44,3 +44,54 @@ func InitDeviceMetadataTable(db *sql.DB) error {
 
 	return nil
 }
+
+// InitVoucherReceiverTokensTable creates the voucher_receiver_tokens table for authentication
+func InitVoucherReceiverTokensTable(db *sql.DB) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS voucher_receiver_tokens (
+			token TEXT PRIMARY KEY,
+			description TEXT NOT NULL,
+			expires_at INTEGER,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS voucher_receiver_tokens_expires
+			ON voucher_receiver_tokens(expires_at)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("error creating voucher receiver tokens table: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// InitVoucherReceiverAuditTable creates the voucher_receiver_audit table for logging received vouchers
+func InitVoucherReceiverAuditTable(db *sql.DB) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS voucher_receiver_audit (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			guid BLOB NOT NULL,
+			serial TEXT,
+			model TEXT,
+			manufacturer TEXT,
+			source_ip TEXT,
+			token_used TEXT,
+			received_at INTEGER NOT NULL,
+			file_size INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS voucher_receiver_audit_received
+			ON voucher_receiver_audit(received_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS voucher_receiver_audit_guid
+			ON voucher_receiver_audit(guid)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("error creating voucher receiver audit table: %w", err)
+		}
+	}
+
+	return nil
+}

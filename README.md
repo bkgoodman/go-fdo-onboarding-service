@@ -93,6 +93,25 @@ go build -o fdo-onboarding-service .
 ./fdo-onboarding-service -config config.yaml -import-owner-key owner_key.pem
 ```
 
+### Voucher Receiver Token Management
+
+```bash
+# List all authentication tokens
+./fdo-onboarding-service -config config.yaml -list-receiver-tokens
+
+# Add a new token (expires in 24 hours)
+./fdo-onboarding-service -config config.yaml -add-receiver-token "my-token Description text 24"
+
+# Add a permanent token (never expires)
+./fdo-onboarding-service -config config.yaml -add-receiver-token "permanent-token Description 0"
+
+# Delete a token
+./fdo-onboarding-service -config config.yaml -delete-receiver-token "my-token"
+
+# Clean up expired tokens
+./fdo-onboarding-service -config config.yaml -cleanup-expired-tokens
+```
+
 ### Server Operations
 
 ```bash
@@ -156,6 +175,93 @@ device_storage:
 - **Metadata tracking**: Track onboarding history and re-onboarding
 
 See `DEVICE_STORAGE.md` for comprehensive documentation.
+
+## Voucher Receiver (HTTP Push)
+
+This service can receive vouchers pushed from manufacturing systems via HTTP, following the FDO Voucher Transfer Protocol specification.
+
+### Features
+
+- **HTTP Endpoint**: Accepts vouchers via `POST /api/v1/vouchers`
+- **Authentication**: Supports global token and database-backed tokens with expiration
+- **Ownership Validation**: Rejects vouchers not signed to configured owner keys
+- **Audit Logging**: Logs all received vouchers (GUID, IP, token, metadata)
+- **Storage**: Saves vouchers to existing voucher directory in PEM format
+- **Security**: 10MB size limit, duplicate detection, source IP tracking
+
+### Configuration
+
+Enable the voucher receiver in `config.yaml`:
+
+```yaml
+voucher_receiver:
+  enabled: true                    # Enable the receiver (default: false)
+  endpoint: "/api/v1/vouchers"     # HTTP endpoint path
+  global_token: "secret-token"     # Optional global bearer token
+  validate_ownership: true         # Reject vouchers not signed to us (default: true)
+  require_auth: true               # Require authentication (default: true)
+```
+
+### Token Management
+
+Add authentication tokens for manufacturing systems:
+
+```bash
+# Add a token that expires in 24 hours
+./fdo-onboarding-service --add-receiver-token "mfg-system-1 Manufacturing System A 24"
+
+# Add a permanent token (never expires)
+./fdo-onboarding-service --add-receiver-token "test-token Test system 0"
+
+# List all tokens
+./fdo-onboarding-service --list-receiver-tokens
+
+# Delete a token
+./fdo-onboarding-service --delete-receiver-token "mfg-system-1"
+
+# Clean up expired tokens
+./fdo-onboarding-service --cleanup-expired-tokens
+```
+
+### HTTP API
+
+**Request:**
+```bash
+curl -X POST http://localhost:8080/api/v1/vouchers \
+  -H "Authorization: Bearer your-token-here" \
+  -F "voucher=@device.fdoov" \
+  -F "serial=ABC123" \
+  -F "model=device-model"
+```
+
+**Success Response (200 OK):**
+```json
+{
+  "status": "accepted",
+  "voucher_id": "550e8400e29b41d4a716446655440000",
+  "message": "Voucher accepted and stored",
+  "timestamp": "2026-02-19T13:48:16Z"
+}
+```
+
+**Error Responses:**
+- `400` - Invalid voucher format
+- `401` - Missing/invalid authentication token
+- `403` - Voucher not signed to our owner key
+- `409` - Voucher already exists
+- `413` - File exceeds 10MB limit
+- `500` - Server error
+
+### Testing
+
+Use the demo script to test voucher receiver:
+
+```bash
+# Test voucher receiver with a sample voucher
+./tests/test_voucher_receiver.sh
+```
+
+See `docs/VOUCHER_RECEIVER_IMPLEMENTATION.md` for complete documentation.
 
 ## Dependencies
 
