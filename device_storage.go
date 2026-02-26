@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/fido-device-onboard/go-fdo"
-	"github.com/fido-device-onboard/go-fdo/cbor"
 	"github.com/fido-device-onboard/go-fdo/protocol"
 	"github.com/fido-device-onboard/go-fdo/sqlite"
 	"gopkg.in/yaml.v3"
@@ -122,48 +120,16 @@ func (m *DeviceStorageManager) RemoveVoucher(ctx context.Context, guid protocol.
 	return m.DB.RemoveVoucher(ctx, guid)
 }
 
-// loadVoucherFromFile reads and parses a PEM-encoded voucher file
+// loadVoucherFromFile reads and parses a voucher file (PEM or raw CBOR).
+// Delegates to the library's ParseVoucherFile.
 func (m *DeviceStorageManager) loadVoucherFromFile(guid protocol.GUID) (*fdo.Voucher, error) {
 	// Find voucher file
-	filepath, err := m.findVoucherFile(guid)
+	voucherPath, err := m.findVoucherFile(guid)
 	if err != nil {
 		return nil, err
 	}
 
-	// Read file
-	data, err := os.ReadFile(filepath)
-	if err != nil {
-		return nil, fmt.Errorf("error reading voucher file: %w", err)
-	}
-
-	// Parse PEM format
-	pemData := string(data)
-
-	// Extract base64 data between PEM markers
-	start := strings.Index(pemData, "-----BEGIN OWNERSHIP VOUCHER-----")
-	end := strings.Index(pemData, "-----END OWNERSHIP VOUCHER-----")
-	if start == -1 || end == -1 {
-		return nil, fmt.Errorf("invalid PEM format: missing markers")
-	}
-
-	start += len("-----BEGIN OWNERSHIP VOUCHER-----")
-	base64Data := strings.TrimSpace(pemData[start:end])
-	base64Data = strings.ReplaceAll(base64Data, "\n", "")
-	base64Data = strings.ReplaceAll(base64Data, "\r", "")
-
-	// Decode base64
-	cborData, err := base64.StdEncoding.DecodeString(base64Data)
-	if err != nil {
-		return nil, fmt.Errorf("error decoding base64: %w", err)
-	}
-
-	// Unmarshal CBOR to voucher
-	var voucher fdo.Voucher
-	if err := cbor.Unmarshal(cborData, &voucher); err != nil {
-		return nil, fmt.Errorf("error unmarshaling voucher: %w", err)
-	}
-
-	return &voucher, nil
+	return fdo.ParseVoucherFile(voucherPath)
 }
 
 // findVoucherFile locates voucher file by GUID

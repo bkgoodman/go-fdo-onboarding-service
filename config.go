@@ -52,12 +52,12 @@ type Config struct {
 
 	// TO0 configuration
 	TO0 struct {
-		Addr              string `yaml:"addr"`               // Rendezvous server address
-		GUID              string `yaml:"guid"`               // Device GUID to register
-		Delegate          string `yaml:"delegate"`           // Delegate cert name
-		Bypass            bool   `yaml:"bypass"`             // Skip TO1
-		Delay             int    `yaml:"delay"`              // Delay TO1 by N seconds
-		ReplacementPolicy string `yaml:"replacement_policy"` // RV voucher replacement policy
+		GUID              string            `yaml:"guid"`               // Device GUID to register
+		Delegate          string            `yaml:"delegate"`           // Delegate cert name
+		Bypass            bool              `yaml:"bypass"`             // Skip TO1
+		Delay             int               `yaml:"delay"`              // Delay TO1 by N seconds
+		ReplacementPolicy string            `yaml:"replacement_policy"` // RV voucher replacement policy
+		RvFilter          TO0RvFilterConfig `yaml:"rv_filter"`          // RV entry filtering policy
 	} `yaml:"to0"`
 
 	// Resale configuration
@@ -116,6 +116,33 @@ type Config struct {
 
 	// Voucher receiver configuration
 	VoucherReceiver VoucherReceiverConfig `yaml:"voucher_receiver"`
+
+	// DID identity configuration
+	DID DIDConfig `yaml:"did"`
+
+	// Pull service configuration (PullAuth server + Pull API)
+	PullService PullServiceConfig `yaml:"pull_service"`
+}
+
+// DIDConfig controls the DID identity published by this service.
+// The DID document advertises the owner's public key and service endpoints
+// (push receiver, pull holder) so that partners who exchange DIDs can
+// discover keys and endpoints without further configuration.
+type DIDConfig struct {
+	Host          string `yaml:"host"`           // Hostname for did:web URI; auto-detected from server.ext_addr if empty
+	Path          string `yaml:"path"`           // Optional sub-path for did:web URI (e.g., "owner1")
+	ServeDocument bool   `yaml:"serve_document"` // Serve /.well-known/did.json
+	KeyType       string `yaml:"key_type"`       // Owner key type to use for DID (ec256, ec384, rsa2048, rsa3072)
+}
+
+// PullServiceConfig controls the PullAuth server and Pull API that allow
+// authenticated recipients (owner key holders or delegates) to pull vouchers.
+type PullServiceConfig struct {
+	Enabled                bool          `yaml:"enabled"`
+	SessionTTL             time.Duration `yaml:"session_ttl"`
+	MaxSessions            int           `yaml:"max_sessions"`
+	TokenTTL               time.Duration `yaml:"token_ttl"`
+	RevealVoucherExistence bool          `yaml:"reveal_voucher_existence"`
 }
 
 // RendezvousEntry represents a single rendezvous endpoint
@@ -123,6 +150,31 @@ type RendezvousEntry struct {
 	Host   string `yaml:"host"`   // IP address or DNS name
 	Port   int    `yaml:"port"`   // Port number
 	Scheme string `yaml:"scheme"` // "http" or "https"
+}
+
+// TO0RvFilterConfig controls which RV entries from voucher headers the OBS
+// will attempt TO0 registration against.
+//
+// Mode determines how the filter operates:
+//   - "allow_all" (default): Attempt TO0 to every RV entry from the voucher
+//     header EXCEPT those matching the deny list.
+//   - "allow_list": Attempt TO0 ONLY to RV entries matching the allow list.
+//     All other entries are silently skipped.
+//   - "allow_list_warn": Same as allow_list, but logs a warning for every
+//     skipped RV entry (useful for auditing during initial deployment).
+type TO0RvFilterConfig struct {
+	Mode          string          `yaml:"mode"`           // "allow_all", "allow_list", "allow_list_warn"
+	MaxAttempts   int             `yaml:"max_attempts"`   // Max TO0 retries per RV entry (0 = infinite)
+	RetryInterval time.Duration   `yaml:"retry_interval"` // Delay between retries
+	Allow         []RvFilterEntry `yaml:"allow"`          // Used only in allow_list / allow_list_warn modes
+	Deny          []RvFilterEntry `yaml:"deny"`           // Used only in allow_all mode
+}
+
+// RvFilterEntry matches against a parsed RV directive URL.
+type RvFilterEntry struct {
+	Host   string `yaml:"host"`   // DNS or IP, case-insensitive, supports glob (e.g. "*.mfg.com")
+	Port   int    `yaml:"port"`   // 0 = match any port
+	Scheme string `yaml:"scheme"` // "" = match any scheme
 }
 
 // DefaultConfig returns a configuration with default values
@@ -170,19 +222,25 @@ func DefaultConfig() *Config {
 			GenerateCertificates: false,
 		},
 		TO0: struct {
-			Addr              string `yaml:"addr"`
-			GUID              string `yaml:"guid"`
-			Delegate          string `yaml:"delegate"`
-			Bypass            bool   `yaml:"bypass"`
-			Delay             int    `yaml:"delay"`
-			ReplacementPolicy string `yaml:"replacement_policy"`
+			GUID              string            `yaml:"guid"`
+			Delegate          string            `yaml:"delegate"`
+			Bypass            bool              `yaml:"bypass"`
+			Delay             int               `yaml:"delay"`
+			ReplacementPolicy string            `yaml:"replacement_policy"`
+			RvFilter          TO0RvFilterConfig `yaml:"rv_filter"`
 		}{
-			Addr:              "",
 			GUID:              "",
 			Delegate:          "",
 			Bypass:            false,
 			Delay:             0,
 			ReplacementPolicy: "allow-any",
+			RvFilter: TO0RvFilterConfig{
+				Mode:          "allow_all",
+				MaxAttempts:   3,
+				RetryInterval: 30 * time.Second,
+				Allow:         []RvFilterEntry{},
+				Deny:          []RvFilterEntry{},
+			},
 		},
 		Resale: struct {
 			GUID string `yaml:"guid"`
@@ -295,6 +353,19 @@ func DefaultConfig() *Config {
 			GlobalToken:       "",
 			ValidateOwnership: true,
 			RequireAuth:       true,
+		},
+		DID: DIDConfig{
+			Host:          "",
+			Path:          "",
+			ServeDocument: true,
+			KeyType:       "ec384",
+		},
+		PullService: PullServiceConfig{
+			Enabled:                false,
+			SessionTTL:             60 * time.Second,
+			MaxSessions:            1000,
+			TokenTTL:               1 * time.Hour,
+			RevealVoucherExistence: false,
 		},
 	}
 }

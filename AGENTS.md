@@ -8,8 +8,7 @@ You will need to run this server to test - but user will be responsible for runn
 - Log it's output for subsequent introspection
 - Kill and restart when/where needed
 
-
-# Definition of "Done" 
+## Definition of "Done"
 
 Before we call stuff done and complete, we must be able to:
 
@@ -18,3 +17,29 @@ Before we call stuff done and complete, we must be able to:
 - `golangci-lint` all
 - `shellcheck` all shell scripts
 - Fix shell script formatting `shellcheck -s sh -f checkstyle -x ./...`
+- Stuff should have unit tests
+- User-visible stuff (commands, config file parameters, etc) should be documented. If not directly in README.md, in other .md docs which reference it. 
+
+## Testing
+
+Be aware of different _types_ of tests to be concidered when adding (or changing) functionality:
+
+### Unit vs. Integration
+
+- Unit testing: test_something.go tests done to test specific functions and code in go framework
+- Integration tests: Use of (external, shell scripts/commands) to exercise the end application built from actual CLI or config files, looking at command output, network protocol or generated files as evidence of tests
+
+### Positive vs. Negative
+
+- Positive: Did the test perform the desired result when run (most tests are "positive" in nature)
+- Negative: When presented with something we were trying to block or disallow, creation of tests which should _fail_ when run. These are particularly important when dealing with security or credentialling - e.g. Did an operation fail (as expected) when attpepted with incorrect credentials, nonces, hashes, permissions, etc.
+
+Please add tests with some level of discression. We don't need _every_ possible code change to do full positive and negative, unit and integration testing. But certinally high-level functionality, user commands, etc should be well-covered.
+
+## Work Tracking
+
+It may be okay to leave stuff incomplete, but when done, keep track in TODO.md so we don't lose track.
+
+When we do stuff - make sure we update TODO.md to mark status (completion, etc)
+
+Tests todo should be tracked at the end of this file, separately.

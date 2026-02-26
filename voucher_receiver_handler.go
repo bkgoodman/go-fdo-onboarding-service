@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"crypto"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -19,7 +18,6 @@ import (
 	"time"
 
 	"github.com/fido-device-onboard/go-fdo"
-	"github.com/fido-device-onboard/go-fdo/cbor"
 	"github.com/fido-device-onboard/go-fdo/protocol"
 	"github.com/fido-device-onboard/go-fdo/sqlite"
 )
@@ -32,15 +30,17 @@ type VoucherReceiverHandler struct {
 	db            *sqlite.DB
 	tokenManager  *VoucherReceiverTokenManager
 	deviceStorage *DeviceStorageManager
+	dispatcher    *TO0Dispatcher
 }
 
 // NewVoucherReceiverHandler creates a new voucher receiver handler
-func NewVoucherReceiverHandler(config *Config, db *sqlite.DB, tokenManager *VoucherReceiverTokenManager, deviceStorage *DeviceStorageManager) *VoucherReceiverHandler {
+func NewVoucherReceiverHandler(config *Config, db *sqlite.DB, tokenManager *VoucherReceiverTokenManager, deviceStorage *DeviceStorageManager, dispatcher *TO0Dispatcher) *VoucherReceiverHandler {
 	return &VoucherReceiverHandler{
 		config:        config,
 		db:            db,
 		tokenManager:  tokenManager,
 		deviceStorage: deviceStorage,
+		dispatcher:    dispatcher,
 	}
 }
 
@@ -170,6 +170,11 @@ func (h *VoucherReceiverHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		"path", voucherPath,
 		"source_ip", sourceIP)
 
+	// Submit voucher to TO0 dispatcher for RV registration
+	if h.dispatcher != nil && !h.config.TO0.Bypass {
+		h.dispatcher.SubmitVoucher(ctx, voucher)
+	}
+
 	// Send success response
 	h.sendSuccess(w, guidStr, "Voucher accepted and stored")
 }
@@ -235,36 +240,10 @@ func (h *VoucherReceiverHandler) getSourceIP(r *http.Request) string {
 	return ip
 }
 
-// parseVoucher parses a voucher from PEM or raw CBOR data
+// parseVoucher parses a voucher from PEM or raw CBOR data.
+// Delegates to the library's ParseVoucherString (handles both PEM and CBOR).
 func (h *VoucherReceiverHandler) parseVoucher(data []byte) (*fdo.Voucher, error) {
-	// Try parsing as PEM first
-	pemData := string(data)
-	if strings.Contains(pemData, "-----BEGIN OWNERSHIP VOUCHER-----") {
-		start := strings.Index(pemData, "-----BEGIN OWNERSHIP VOUCHER-----")
-		end := strings.Index(pemData, "-----END OWNERSHIP VOUCHER-----")
-		if start == -1 || end == -1 {
-			return nil, fmt.Errorf("invalid PEM format")
-		}
-
-		start += len("-----BEGIN OWNERSHIP VOUCHER-----")
-		base64Data := strings.TrimSpace(pemData[start:end])
-		base64Data = strings.ReplaceAll(base64Data, "\n", "")
-		base64Data = strings.ReplaceAll(base64Data, "\r", "")
-
-		cborData, err := base64.StdEncoding.DecodeString(base64Data)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode base64: %w", err)
-		}
-		data = cborData
-	}
-
-	// Parse CBOR
-	var voucher fdo.Voucher
-	if err := cbor.Unmarshal(data, &voucher); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal voucher: %w", err)
-	}
-
-	return &voucher, nil
+	return fdo.ParseVoucherString(string(data))
 }
 
 // validateOwnership checks if the voucher is signed to one of our owner keys
@@ -299,7 +278,8 @@ func (h *VoucherReceiverHandler) validateOwnership(ctx context.Context, voucher 
 	return false, nil
 }
 
-// saveVoucher saves the voucher to disk in PEM format
+// saveVoucher saves the voucher to disk in PEM format.
+// Uses the library's FormatVoucherCBORToPEM for encoding and atomic file write.
 func (h *VoucherReceiverHandler) saveVoucher(path string, data []byte) error {
 	// Ensure directory exists
 	dir := filepath.Dir(path)
@@ -307,30 +287,17 @@ func (h *VoucherReceiverHandler) saveVoucher(path string, data []byte) error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	// If data is already PEM, write directly
+	// Normalize to PEM: if already PEM keep as-is, otherwise convert CBOR→PEM
+	var pemBytes []byte
 	if strings.Contains(string(data), "-----BEGIN OWNERSHIP VOUCHER-----") {
-		return os.WriteFile(path, data, 0644)
+		pemBytes = data
+	} else {
+		pemBytes = fdo.FormatVoucherCBORToPEM(data)
 	}
-
-	// Convert CBOR to PEM format
-	base64Data := base64.StdEncoding.EncodeToString(data)
-
-	// Format PEM with line breaks every 64 characters
-	var pemBuilder strings.Builder
-	pemBuilder.WriteString("-----BEGIN OWNERSHIP VOUCHER-----\n")
-	for i := 0; i < len(base64Data); i += 64 {
-		end := i + 64
-		if end > len(base64Data) {
-			end = len(base64Data)
-		}
-		pemBuilder.WriteString(base64Data[i:end])
-		pemBuilder.WriteString("\n")
-	}
-	pemBuilder.WriteString("-----END OWNERSHIP VOUCHER-----\n")
 
 	// Write to temp file first, then rename (atomic)
 	tempPath := path + ".tmp"
-	if err := os.WriteFile(tempPath, []byte(pemBuilder.String()), 0644); err != nil {
+	if err := os.WriteFile(tempPath, pemBytes, 0644); err != nil {
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 

@@ -46,6 +46,31 @@ import (
 func init() {
 	// Set up logging BEFORE any go-fdo code runs to prevent library from setting its own logger
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+	// Register pull command flags
+	pullURL = flag.String("pull-url", "", "Pull vouchers from a remote Holder (PullAuth) and exit")
+	pullDID = flag.String("pull-did", "", "Resolve Holder URL from DID URI (used with --pull-url or standalone)")
+	pullKeyFile = flag.String("pull-key", "", "Owner private key PEM file for pull authentication")
+	pullDelegateKey = flag.String("pull-delegate-key", "", "Delegate private key PEM file for delegate-based pull")
+	pullDelegateChain = flag.String("pull-delegate-chain", "", "Delegate certificate chain PEM file")
+	pullOwnerPub = flag.String("pull-owner-pub", "", "Owner public key PEM file (for delegate mode without owner private key)")
+	pullHolderKey = flag.String("pull-holder-key", "", "Holder public key PEM file for signature verification")
+	pullOutputDir = flag.String("pull-output", "", "Output directory for downloaded vouchers (default: config voucher dir)")
+	pullListOnly = flag.Bool("pull-list", false, "List vouchers only, do not download")
+	pullJSONOutput = flag.Bool("pull-json", false, "Output pull results as JSON")
+
+	// Register delegate command flags
+	createDelegate = flag.String("create-delegate", "", "Create delegate cert signed by owner key (name required) and exit")
+	signDelegateCSR = flag.String("sign-delegate-csr", "", "Sign an external CSR with owner key (CSR PEM path) and exit")
+	generateDelegateCSR = flag.String("generate-delegate-csr", "", "Generate delegate key + CSR for parent signing (name required) and exit")
+	importDelegateChain = flag.String("import-delegate-chain", "", "Import signed cert chain for existing delegate key (name required) and exit")
+	listDelegates = flag.Bool("list-delegates", false, "List all delegate keys and exit")
+	delegatePermissions = flag.String("delegate-permissions", "voucher-claim", "Comma-separated delegate permissions (voucher-claim,redirect,etc)")
+	delegateSubject = flag.String("delegate-subject", "", "Subject CN for delegate certificate (default: delegate name)")
+	delegateKeyType = flag.String("delegate-key-type", "ec384", "Key type for delegate: ec256, ec384, rsa2048, rsa3072")
+	delegateValidity = flag.Int("delegate-validity", 365, "Delegate certificate validity in days")
+	delegateOutput = flag.String("delegate-output", "", "Output directory for delegate PEM files (default: stdout)")
+	delegateChainFile = flag.String("delegate-chain", "", "Delegate certificate chain PEM file (for --import-delegate-chain)")
 }
 
 // Global configuration
@@ -98,6 +123,25 @@ func main() {
 	if *listReceiverTokens || *addReceiverToken != "" || *deleteReceiverToken != "" || *cleanupExpiredTokens {
 		if err := handleReceiverTokenManagement(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// Handle delegate commands
+	if isDelegateCommand() {
+		if err := runDelegateCommand(); err != nil {
+			fmt.Fprintf(os.Stderr, "Delegate error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// Handle pull command
+	if *pullURL != "" || *pullDID != "" {
+		ctx := context.Background()
+		if err := runPullCommand(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "Pull error: %v\n", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
@@ -349,13 +393,6 @@ func runServer(ctx context.Context) error {
 		return fmt.Errorf("file validation failed: %w", err)
 	}
 
-	// Handle TO0 registration if GUID is specified
-	if config.TO0.GUID != "" {
-		if err := registerRvBlob(ctx, state); err != nil {
-			return err
-		}
-	}
-
 	// Handle resale protocol if GUID is specified
 	if config.Resale.GUID != "" {
 		if err := resell(ctx, state); err != nil {
@@ -363,8 +400,11 @@ func runServer(ctx context.Context) error {
 		}
 	}
 
+	// Create TO0 dispatcher for voucher-header-driven RV registration
+	dispatcher := NewTO0Dispatcher(config, state)
+
 	// Start the main server
-	return startServer(ctx, state, deviceStorage)
+	return startServer(ctx, state, deviceStorage, dispatcher)
 }
 
 func generateKeys(state *sqlite.DB) error {
@@ -889,7 +929,7 @@ func validateFiles() error {
 	return nil
 }
 
-func startServer(ctx context.Context, state *sqlite.DB, deviceStorage *DeviceStorageManager) error {
+func startServer(ctx context.Context, state *sqlite.DB, deviceStorage *DeviceStorageManager, dispatcher *TO0Dispatcher) error {
 	// Normalize address
 	extAddr := config.Server.ExtAddr
 	if extAddr == "" {
@@ -902,10 +942,11 @@ func startServer(ctx context.Context, state *sqlite.DB, deviceStorage *DeviceSto
 		return fmt.Errorf("invalid rv-replacement-policy: %w", err)
 	}
 
-	// RV Info
+	// RV Info — build from config.Rendezvous.Entries if present, else fall back
+	// to the server's external address (for self-hosted DI+RV combined mode).
 	var rvInfo [][]protocol.RvInstruction
-	if config.TO0.Addr != "" {
-		rvInfo, err = to0AddrToRvInfo()
+	if len(config.Rendezvous.Entries) > 0 {
+		rvInfo, err = rendezvousEntriesToRvInfo()
 	} else {
 		rvInfo, err = extAddrToRvInfo()
 	}
@@ -916,8 +957,8 @@ func startServer(ctx context.Context, state *sqlite.DB, deviceStorage *DeviceSto
 	// Test RVDelay by introducing a delay before TO1
 	rvInfo = append([][]protocol.RvInstruction{{{Variable: protocol.RVDelaysec, Value: mustMarshal(config.TO0.Delay)}}}, rvInfo...)
 
-	// Create FDO responder
-	handler, err := newHandler(ctx, rvInfo, state, deviceStorage, replacementPolicy)
+	// Create FDO responder — pass dispatcher for AfterVoucherPersist
+	handler, err := newHandler(ctx, rvInfo, state, deviceStorage, replacementPolicy, dispatcher)
 	if err != nil {
 		return err
 	}
@@ -929,12 +970,22 @@ func startServer(ctx context.Context, state *sqlite.DB, deviceStorage *DeviceSto
 	// Add voucher receiver endpoint if enabled
 	if config.VoucherReceiver.Enabled {
 		tokenManager := NewVoucherReceiverTokenManager(state.DB())
-		voucherHandler := NewVoucherReceiverHandler(config, state, tokenManager, deviceStorage)
+		voucherHandler := NewVoucherReceiverHandler(config, state, tokenManager, deviceStorage, dispatcher)
 		mux.Handle("POST "+config.VoucherReceiver.Endpoint, voucherHandler)
 		slog.Info("Voucher receiver enabled",
 			"endpoint", config.VoucherReceiver.Endpoint,
 			"validate_ownership", config.VoucherReceiver.ValidateOwnership,
 			"require_auth", config.VoucherReceiver.RequireAuth)
+	}
+
+	// Set up DID document serving and PullAuth service
+	if config.DID.ServeDocument || config.PullService.Enabled {
+		didSigner, didErr := setupDID(ctx, config, mux, state)
+		if didErr != nil {
+			slog.Warn("DID setup failed (pull service will not be available)", "error", didErr)
+		} else if config.PullService.Enabled {
+			setupPullService(config, mux, didSigner, deviceStorage.VoucherDir)
+		}
 	}
 
 	srv := &http.Server{
@@ -950,12 +1001,25 @@ func startServer(ctx context.Context, state *sqlite.DB, deviceStorage *DeviceSto
 	}
 	defer func() { _ = lis.Close() }()
 
-	fmt.Printf("🔍 DEBUG: About to start server on %s\n", lis.Addr().String())
+	// Start TO0 dispatcher background processing
+	dispatchCtx, dispatchCancel := context.WithCancel(ctx)
+	defer dispatchCancel()
+	if !config.TO0.Bypass {
+		dispatcher.Start(dispatchCtx)
+		defer dispatcher.Stop()
+	}
+
+	// Handle CLI TO0 registration for a specific GUID at startup
+	if config.TO0.GUID != "" {
+		if err := dispatcher.RegisterVoucherByGUID(ctx, config.TO0.GUID); err != nil {
+			slog.Error("TO0 CLI registration failed", "guid", config.TO0.GUID, "error", err)
+		}
+	}
+
 	slog.Info("FDO Manufacturing Station starting",
 		"local", lis.Addr().String(),
 		"external", extAddr,
 		"mode", "full-server")
-	fmt.Printf("🔍 DEBUG: Server started successfully\n")
 
 	// Start server in goroutine to monitor context cancellation
 	errChan := make(chan error, 1)
@@ -1089,41 +1153,36 @@ func doImportVoucher(ctx context.Context, state *sqlite.DB) error {
 	return state.AddVoucher(ctx, &ov)
 }
 
-func to0AddrToRvInfo() ([][]protocol.RvInstruction, error) {
-	url, err := url.Parse(config.TO0.Addr)
-	if err != nil {
-		return nil, fmt.Errorf("cannot parse TO0 addr: %w", err)
-	}
-	prot := protocol.RVProtHTTP
-	if url.Scheme == "https" {
-		prot = protocol.RVProtHTTPS
-	}
-	rvInfo := [][]protocol.RvInstruction{{{Variable: protocol.RVProtocol, Value: mustMarshal(prot)}}}
-	host, portStr, err := net.SplitHostPort(url.Host)
-	if err != nil {
-		host = url.Host
-	}
-	if portStr == "" {
-		portStr = "80"
-		if url.Scheme == "https" {
-			portStr = "443"
+func rendezvousEntriesToRvInfo() ([][]protocol.RvInstruction, error) {
+	var rvInfo [][]protocol.RvInstruction
+	for _, entry := range config.Rendezvous.Entries {
+		prot := protocol.RVProtHTTP
+		if strings.EqualFold(entry.Scheme, "https") {
+			prot = protocol.RVProtHTTPS
 		}
+		directive := []protocol.RvInstruction{{Variable: protocol.RVProtocol, Value: mustMarshal(prot)}}
+
+		host := entry.Host
+		if host == "" {
+			directive = append(directive, protocol.RvInstruction{Variable: protocol.RVIPAddress, Value: mustMarshal(net.IP{127, 0, 0, 1})})
+		} else if hostIP := net.ParseIP(host); hostIP != nil {
+			directive = append(directive, protocol.RvInstruction{Variable: protocol.RVIPAddress, Value: mustMarshal(hostIP)})
+		} else {
+			directive = append(directive, protocol.RvInstruction{Variable: protocol.RVDns, Value: mustMarshal(host)})
+		}
+
+		if entry.Port > 0 {
+			directive = append(directive, protocol.RvInstruction{Variable: protocol.RVDevPort, Value: mustMarshal(uint16(entry.Port))})
+		}
+
+		if config.TO0.Bypass {
+			directive = append(directive, protocol.RvInstruction{Variable: protocol.RVBypass})
+		}
+
+		rvInfo = append(rvInfo, directive)
 	}
-	if host == "" {
-		rvInfo[0] = append(rvInfo[0], protocol.RvInstruction{Variable: protocol.RVIPAddress, Value: mustMarshal(net.IP{127, 0, 0, 1})})
-	} else if hostIP := net.ParseIP(host); hostIP.To4() != nil || hostIP.To16() != nil {
-		rvInfo[0] = append(rvInfo[0], protocol.RvInstruction{Variable: protocol.RVIPAddress, Value: mustMarshal(hostIP)})
-	} else {
-		rvInfo[0] = append(rvInfo[0], protocol.RvInstruction{Variable: protocol.RVDns, Value: mustMarshal(host)})
-	}
-	portNum, err := strconv.ParseUint(portStr, 10, 16)
-	if err != nil {
-		return nil, fmt.Errorf("invalid TO0 port: %w", err)
-	}
-	port := uint16(portNum)
-	rvInfo[0] = append(rvInfo[0], protocol.RvInstruction{Variable: protocol.RVDevPort, Value: mustMarshal(port)})
-	if config.TO0.Bypass {
-		rvInfo[0] = append(rvInfo[0], protocol.RvInstruction{Variable: protocol.RVBypass})
+	if len(rvInfo) == 0 {
+		return nil, fmt.Errorf("no rendezvous entries configured")
 	}
 	return rvInfo, nil
 }
@@ -1155,61 +1214,6 @@ func extAddrToRvInfo() ([][]protocol.RvInstruction, error) {
 		rvInfo[0] = append(rvInfo[0], protocol.RvInstruction{Variable: protocol.RVBypass})
 	}
 	return rvInfo, nil
-}
-
-func registerRvBlob(ctx context.Context, state *sqlite.DB) error {
-	if config.TO0.Addr == "" {
-		return fmt.Errorf("to0-guid depends on to0 addr being set")
-	}
-
-	// Parse to0-guid config
-	guidBytes, err := hex.DecodeString(strings.ReplaceAll(config.TO0.GUID, "-", ""))
-	if err != nil {
-		return fmt.Errorf("error parsing GUID of device to register RV blob: %w", err)
-	}
-	if len(guidBytes) != 16 {
-		return fmt.Errorf("error parsing GUID of device to register RV blob: must be 16 bytes")
-	}
-	var guid protocol.GUID
-	copy(guid[:], guidBytes)
-
-	// Construct TO2 addr
-	proto := protocol.HTTPTransport
-	if config.Server.UseTLS {
-		proto = protocol.HTTPSTransport
-	}
-	host, portStr, err := net.SplitHostPort(config.Server.ExtAddr)
-	if err != nil {
-		return fmt.Errorf("invalid external addr: %w", err)
-	}
-	if host == "" {
-		host = "localhost"
-	}
-	portNum, err := strconv.ParseUint(portStr, 10, 16)
-	if err != nil {
-		return fmt.Errorf("invalid external port: %w", err)
-	}
-	port := uint16(portNum)
-	to2Addrs := []protocol.RvTO2Addr{
-		{
-			DNSAddress:        &host,
-			Port:              port,
-			TransportProtocol: proto,
-		},
-	}
-
-	// Register RV blob with RV server
-	refresh, err := (&fdo.TO0Client{
-		Vouchers:     state,
-		OwnerKeys:    state,
-		DelegateKeys: state,
-	}).RegisterBlob(ctx, tlsTransport(config.TO0.Addr, nil), guid, to2Addrs, config.TO0.Delegate)
-	if err != nil {
-		return fmt.Errorf("error performing to0: %w", err)
-	}
-	slog.Info("RV blob registered", "ttl", time.Duration(refresh)*time.Second)
-
-	return nil
 }
 
 func resell(ctx context.Context, state *sqlite.DB) error {
@@ -1356,18 +1360,18 @@ func loadWiFiConfig(filePath string) (*fsim.WiFiOwner, error) {
 }
 
 // newHandler creates the FDO handler with all functionality
-func newHandler(ctx context.Context, rvInfo [][]protocol.RvInstruction, state *sqlite.DB, deviceStorage *DeviceStorageManager, replacementPolicy fdo.VoucherReplacementPolicy) (*transport.Handler, error) {
+func newHandler(ctx context.Context, rvInfo [][]protocol.RvInstruction, state *sqlite.DB, deviceStorage *DeviceStorageManager, replacementPolicy fdo.VoucherReplacementPolicy, dispatcher *TO0Dispatcher) (*transport.Handler, error) {
 	aio := fdo.AllInOne{
 		DIAndOwner:         state,
 		RendezvousAndOwner: withOwnerAddrs{state, rvInfo},
 	}
 	autoExtend := aio.Extend
 
-	// Auto-register RV blob so that TO1 can be tested unless a TO0 address is
-	// given or RV bypass is set
+	// Use the TO0 dispatcher to register RV blobs after DI voucher creation,
+	// unless RV bypass is set (direct TO2 mode).
 	var autoTO0 func(context.Context, fdo.Voucher) error
-	if config.TO0.Addr == "" && !config.TO0.Bypass {
-		autoTO0 = aio.RegisterOwnerAddr
+	if !config.TO0.Bypass && dispatcher != nil {
+		autoTO0 = dispatcher.SubmitVoucherFunc()
 	}
 
 	// Use Manufacturer key as device certificate authority

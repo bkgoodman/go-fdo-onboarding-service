@@ -34,6 +34,39 @@
 **Files Modified:**
 - ✅ `owner_key_service.go` - Complete certificate parsing implementation
 
+### 8. ✅ COMPLETED: Delegate Certificate Management CLI
+
+**Status:** ✅ COMPLETED - Full delegate cert lifecycle via CLI
+
+**Implementation:**
+- ✅ `--create-delegate <name>` — Parent issues delegate cert signed by owner key, stores in sqlite, outputs PEM
+- ✅ `--sign-delegate-csr <csr.pem>` — Parent signs external CSR, outputs signed cert chain
+- ✅ `--generate-delegate-csr <name>` — Child generates key + CSR for parent signing
+- ✅ `--import-delegate-chain <name>` — Import signed chain for existing delegate key
+- ✅ `--list-delegates` — List all delegate keys with permissions, expiry, fingerprint
+- ✅ Shared flags: `--delegate-permissions`, `--delegate-key-type`, `--delegate-validity`, `--delegate-subject`, `--delegate-output`, `--delegate-chain`
+- ✅ Unit tests (11 tests): positive + negative (wrong owner key, missing permission)
+- ✅ Uses library's `fdo.VerifyDelegateChain`, `fdo.OIDPermitVoucherClaim`, `sqlite.AddDelegateKey`
+
+**Files:**
+- ✅ `delegate_command.go` — All delegate CLI commands
+- ✅ `delegate_command_test.go` — Unit tests
+- ✅ `main.go` — Flag registration + dispatch wiring
+
+### 9. ✅ COMPLETED: PullAuth + DID Integration
+
+**Status:** ✅ COMPLETED - Pull voucher service + DID document serving
+
+**Implementation:**
+- ✅ DID document serving (did:web) from owner key
+- ✅ PullAuth server (challenge-response) with delegate chain validation
+- ✅ Pull CLI client (`--pull-url`) for cron-based voucher pulling
+- ✅ Config: `DIDConfig`, `PullServiceConfig` structs with defaults
+
+**Files:**
+- ✅ `did_setup.go`, `pull_service_setup.go`, `pull_voucher_store.go`, `pull_command.go`
+- ✅ `config.go` — DID + PullService config additions
+
 ## Medium Priority
 
 ### 3. Add Error Handling and Logging
