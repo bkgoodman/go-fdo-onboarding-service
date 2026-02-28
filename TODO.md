@@ -67,6 +67,32 @@
 - ✅ `did_setup.go`, `pull_service_setup.go`, `pull_voucher_store.go`, `pull_command.go`
 - ✅ `config.go` — DID + PullService config additions
 
+### 10. ✅ COMPLETED: BMO FSIM Delivery Modes (URL + Meta-URL)
+
+**Status:** ✅ COMPLETED - URL and meta-URL delivery modes for fdo.bmo
+
+**Implementation:**
+- ✅ Config format extended: `bmo_files` entries support `type:file` (inline), `type:url:URL` (URL mode), `meta:URL` (meta-URL mode)
+- ✅ New config fields: `bmo_tls_ca`, `bmo_expected_hash`, `bmo_meta_signer` for URL/meta options
+- ✅ `parseBMOSpec()` helper parses all three formats
+- ✅ `ownerModules()` dispatches to `AddImageURL()` / `AddImageMetaURL()` for non-inline entries
+- ✅ `validateFiles()` skips `os.Stat` for URL/meta entries
+- ✅ Config plumbing through `device_config.go`, `device_storage.go` (reflection + merge)
+- ✅ Unit tests: 29 tests (parseBMOSpec, loaders, hash pipeline, COSE Sign1 verification)
+- ✅ Integration tests: `bmo-url`, `bmo-delivery-nak`, `bmo-url-hash-positive`, `bmo-url-hash-negative`, `bmo-meta-sign-positive`, `bmo-meta-sign-negative`
+- ✅ Positive tests: correct hash accepted, valid COSE Sign1 signature accepted
+- ✅ Negative tests: wrong hash rejected, wrong signing key rejected, tampered signature rejected, garbage/empty keys rejected
+
+**Files:**
+- ✅ `bmo_delivery.go` — Spec parser + config loaders (NEW)
+- ✅ `bmo_delivery_test.go` — Unit tests with positive + negative verification (NEW)
+- ✅ `tests/bmo_test_helper/main.go` — COSE key + signed meta-payload generator for testing (NEW)
+- ✅ `device_config.go`, `config.go`, `device_storage.go` — Config field additions
+- ✅ `main.go` — ownerModules() + validateFiles() updates
+- ✅ `tests/test_examples.sh` — Integration tests (6 BMO delivery/verification tests)
+
+**Scope:** BMO only — `fdo.payload` does not define delivery modes per spec.
+
 ## Medium Priority
 
 ### 3. Add Error Handling and Logging

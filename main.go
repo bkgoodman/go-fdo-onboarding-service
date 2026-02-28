@@ -916,13 +916,15 @@ func validateFiles() error {
 	}
 
 	for _, bmoSpec := range config.FSIM.BMOFiles {
-		parts := strings.SplitN(bmoSpec, ":", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid BMO specification %q: expected type:file format", bmoSpec)
+		parsed, err := parseBMOSpec(bmoSpec)
+		if err != nil {
+			return fmt.Errorf("invalid BMO specification: %w", err)
 		}
-		filePath := parts[1]
-		if _, err := os.Stat(filePath); err != nil {
-			return fmt.Errorf("BMO file not found: %s", filePath)
+		// Only validate file existence for inline mode
+		if parsed.Mode == bmoModeInline {
+			if _, err := os.Stat(parsed.FilePath); err != nil {
+				return fmt.Errorf("BMO file not found: %s", parsed.FilePath)
+			}
 		}
 	}
 
@@ -1660,20 +1662,45 @@ func ownerModules(ctx context.Context, guid protocol.GUID, deviceStorage *Device
 		if slices.Contains(modules, "fdo.bmo") && (fsimConfig.BMOFile != "" || len(fsimConfig.BMOFiles) > 0) {
 			bmoOwner := &fsim.BMOOwner{}
 
-			// Handle multi-file NAK testing mode (with RequireAck)
+			// Load shared delivery-mode config (TLS CA, expected hash, meta signer)
+			tlsCA, err := loadBMOTlsCA(fsimConfig.BMOTlsCA)
+			if err != nil {
+				log.Fatalf("BMO: %v", err)
+			}
+			expectedHash, err := loadBMOExpectedHash(fsimConfig.BMOExpectedHash)
+			if err != nil {
+				log.Fatalf("BMO: %v", err)
+			}
+			metaSigner, err := loadBMOMetaSigner(fsimConfig.BMOMetaSigner)
+			if err != nil {
+				log.Fatalf("BMO: %v", err)
+			}
+
+			// Handle multi-file mode (with RequireAck for inline, automatic for URL/meta)
 			if len(fsimConfig.BMOFiles) > 0 {
 				for _, bmoSpec := range fsimConfig.BMOFiles {
-					parts := strings.SplitN(bmoSpec, ":", 2)
-					if len(parts) != 2 {
-						log.Fatalf("invalid BMO specification %q: expected type:file format", bmoSpec)
-					}
-					imageType, filePath := parts[0], parts[1]
-					data, err := os.ReadFile(filePath)
+					parsed, err := parseBMOSpec(bmoSpec)
 					if err != nil {
-						log.Fatalf("error reading BMO file %q: %v", filePath, err)
+						log.Fatalf("BMO: %v", err)
 					}
-					bmoOwner.AddImageWithAck(imageType, filepath.Base(filePath), data, nil)
-					log.Printf("BMO: Added image with RequireAck: type=%s, file=%s", imageType, filePath)
+
+					switch parsed.Mode {
+					case bmoModeInline:
+						data, err := os.ReadFile(parsed.FilePath)
+						if err != nil {
+							log.Fatalf("error reading BMO file %q: %v", parsed.FilePath, err)
+						}
+						bmoOwner.AddImageWithAck(parsed.ImageType, filepath.Base(parsed.FilePath), data, nil)
+						log.Printf("BMO: Added inline image with RequireAck: type=%s, file=%s", parsed.ImageType, parsed.FilePath)
+
+					case bmoModeURL:
+						bmoOwner.AddImageURL(parsed.ImageType, parsed.URL, expectedHash, tlsCA)
+						log.Printf("BMO: Added URL image: type=%s, url=%s", parsed.ImageType, parsed.URL)
+
+					case bmoModeMetaURL:
+						bmoOwner.AddImageMetaURL(parsed.URL, metaSigner, tlsCA)
+						log.Printf("BMO: Added meta-URL image: url=%s", parsed.URL)
+					}
 				}
 			} else {
 				// Single file mode (no RequireAck)

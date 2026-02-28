@@ -327,6 +327,9 @@ func (m *DeviceStorageManager) configToFSIM(src interface{}) *FSIMConfig {
 		BMOFile         string
 		BMOImageType    string
 		BMOFiles        []string
+		BMOTlsCA        string
+		BMOExpectedHash string
+		BMOMetaSigner   string
 		WiFiConfigFile  string
 		Credentials     []string
 		PubkeyRequests  []string
@@ -357,6 +360,9 @@ func (m *DeviceStorageManager) configToFSIM(src interface{}) *FSIMConfig {
 			BMOFile:         getString(val, "BMOFile"),
 			BMOImageType:    getString(val, "BMOImageType"),
 			BMOFiles:        getStringSlice(val, "BMOFiles"),
+			BMOTlsCA:        getString(val, "BMOTlsCA"),
+			BMOExpectedHash: getString(val, "BMOExpectedHash"),
+			BMOMetaSigner:   getString(val, "BMOMetaSigner"),
 			WiFiConfigFile:  getString(val, "WiFiConfigFile"),
 			Credentials:     getStringSlice(val, "Credentials"),
 			PubkeyRequests:  getStringSlice(val, "PubkeyRequests"),
@@ -377,6 +383,9 @@ func (m *DeviceStorageManager) configToFSIM(src interface{}) *FSIMConfig {
 		BMOFile:         fsim.BMOFile,
 		BMOImageType:    fsim.BMOImageType,
 		BMOFiles:        fsim.BMOFiles,
+		BMOTlsCA:        fsim.BMOTlsCA,
+		BMOExpectedHash: fsim.BMOExpectedHash,
+		BMOMetaSigner:   fsim.BMOMetaSigner,
 		WiFiConfigFile:  fsim.WiFiConfigFile,
 		Credentials:     fsim.Credentials,
 		PubkeyRequests:  fsim.PubkeyRequests,
@@ -441,6 +450,9 @@ func (m *DeviceStorageManager) mergeConfigs(global, group, device *FSIMConfig) *
 	merged.PayloadMime = coalesceString(device, group, global, func(c *FSIMConfig) string { return c.PayloadMime })
 	merged.BMOFile = coalesceString(device, group, global, func(c *FSIMConfig) string { return c.BMOFile })
 	merged.BMOImageType = coalesceString(device, group, global, func(c *FSIMConfig) string { return c.BMOImageType })
+	merged.BMOTlsCA = coalesceString(device, group, global, func(c *FSIMConfig) string { return c.BMOTlsCA })
+	merged.BMOExpectedHash = coalesceString(device, group, global, func(c *FSIMConfig) string { return c.BMOExpectedHash })
+	merged.BMOMetaSigner = coalesceString(device, group, global, func(c *FSIMConfig) string { return c.BMOMetaSigner })
 	merged.WiFiConfigFile = coalesceString(device, group, global, func(c *FSIMConfig) string { return c.WiFiConfigFile })
 
 	// Booleans: device overrides group overrides global

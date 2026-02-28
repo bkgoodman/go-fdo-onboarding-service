@@ -78,7 +78,10 @@ type Config struct {
 		PayloadFiles    []string `yaml:"payload_files"`     // Multiple payload files (type:file format)
 		BMOFile         string   `yaml:"bmo_file"`          // Single BMO file
 		BMOImageType    string   `yaml:"bmo_image_type"`    // Image type for BMO file
-		BMOFiles        []string `yaml:"bmo_files"`         // Multiple BMO files (type:file format)
+		BMOFiles        []string `yaml:"bmo_files"`         // Multiple BMO files (type:file, type:url:URL, or meta:URL format)
+		BMOTlsCA        string   `yaml:"bmo_tls_ca"`        // DER CA cert for URL/meta TLS validation
+		BMOExpectedHash string   `yaml:"bmo_expected_hash"` // Hex hash for URL-mode image verification
+		BMOMetaSigner   string   `yaml:"bmo_meta_signer"`   // COSE_Key PEM for meta-payload signing
 		WiFiConfigFile  string   `yaml:"wifi_config_file"`  // WiFi configuration file
 		Credentials     []string `yaml:"credentials"`       // Credential specifications
 		PubkeyRequests  []string `yaml:"pubkey_requests"`   // Public key requests
@@ -261,6 +264,9 @@ func DefaultConfig() *Config {
 			BMOFile         string   `yaml:"bmo_file"`
 			BMOImageType    string   `yaml:"bmo_image_type"`
 			BMOFiles        []string `yaml:"bmo_files"`
+			BMOTlsCA        string   `yaml:"bmo_tls_ca"`
+			BMOExpectedHash string   `yaml:"bmo_expected_hash"`
+			BMOMetaSigner   string   `yaml:"bmo_meta_signer"`
 			WiFiConfigFile  string   `yaml:"wifi_config_file"`
 			Credentials     []string `yaml:"credentials"`
 			PubkeyRequests  []string `yaml:"pubkey_requests"`
@@ -278,6 +284,9 @@ func DefaultConfig() *Config {
 			BMOFile:         "",
 			BMOImageType:    "application/x-iso9660-image",
 			BMOFiles:        []string{},
+			BMOTlsCA:        "",
+			BMOExpectedHash: "",
+			BMOMetaSigner:   "",
 			WiFiConfigFile:  "",
 			Credentials:     []string{},
 			PubkeyRequests:  []string{},

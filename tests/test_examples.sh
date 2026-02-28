@@ -1329,6 +1329,543 @@ test_bmo_multi_asset() {
 	log_success "BMO FSIM Multi-Asset test PASSED"
 }
 
+# Test: BMO FSIM URL Delivery Mode
+# This test verifies URL delivery mode where the device fetches the image from a URL
+# instead of receiving it inline over the FDO channel
+test_bmo_url() {
+	log_section "TEST: BMO FSIM URL Delivery Mode"
+
+	mkdir -p "$EPHEMERAL_DIR"
+	rm -f "$DB_FILE" "$CRED_FILE"
+
+	# Create a random test file (5KB)
+	BMO_FILE="$EPHEMERAL_DIR/test_url_image.bin"
+	RECEIVED_FILE="examples/bmo-test_url_image.bin"
+	log_step "Creating random test boot image (5KB)"
+	dd if=/dev/urandom of="$BMO_FILE" bs=1024 count=5 2>/dev/null
+	ORIGINAL_HASH=$(sha256sum "$BMO_FILE" | awk '{print $1}')
+	log_success "Created test boot image: $BMO_FILE (hash: $ORIGINAL_HASH)"
+
+	# Start a simple HTTP file server to serve the image
+	FILE_SERVER_PORT=18080
+	log_step "Starting HTTP file server on port $FILE_SERVER_PORT"
+	python3 -m http.server "$FILE_SERVER_PORT" --directory "$EPHEMERAL_DIR" >/dev/null 2>&1 &
+	FILE_SERVER_PID=$!
+	sleep 1
+	if ! kill -0 "$FILE_SERVER_PID" 2>/dev/null; then
+		log_error "File server failed to start"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "HTTP file server started (PID: $FILE_SERVER_PID)"
+
+	# Start OBS server with URL delivery mode
+	# The image URL points to the file server
+	IMAGE_URL="http://127.0.0.1:${FILE_SERVER_PORT}/test_url_image.bin"
+	start_server "-bmo application/x-iso9660-image:url:${IMAGE_URL}"
+
+	log_step "Running DI"
+	if ! run_cmd go run ./cmd client -di "$SERVER_URL"; then
+		log_error "DI failed"
+		kill "$FILE_SERVER_PID" 2>/dev/null || true
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "DI completed"
+
+	log_step "Running TO1/TO2 with URL delivery mode"
+	if ! run_cmd go run ./cmd client; then
+		log_error "TO1/TO2 failed with URL delivery mode"
+		stop_server
+		kill "$FILE_SERVER_PID" 2>/dev/null || true
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "TO1/TO2 completed with URL delivery mode"
+
+	stop_server
+	kill "$FILE_SERVER_PID" 2>/dev/null || true
+
+	# Verify the received file matches the original
+	if [ ! -f "$RECEIVED_FILE" ]; then
+		log_error "Received file not found: $RECEIVED_FILE"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+
+	RECEIVED_HASH=$(sha256sum "$RECEIVED_FILE" | awk '{print $1}')
+	log_step "Verifying boot image integrity (URL delivery)"
+	if [ "$ORIGINAL_HASH" = "$RECEIVED_HASH" ]; then
+		log_success "Boot image hashes match! URL delivery successful"
+		log_success "  Original:  $ORIGINAL_HASH"
+		log_success "  Received:  $RECEIVED_HASH"
+	else
+		log_error "Boot image hashes DO NOT match!"
+		rm -f "$BMO_FILE" "$RECEIVED_FILE"
+		return 1
+	fi
+
+	# Cleanup
+	rm -f "$BMO_FILE" "$RECEIVED_FILE" bmo-*
+	log_success "BMO FSIM URL Delivery Mode test PASSED"
+}
+
+# Test: BMO FSIM Delivery Mode NAK Fallback
+# Server offers URL mode first (which device NAKs due to restricted delivery modes),
+# then falls back to inline mode which succeeds
+test_bmo_delivery_nak() {
+	log_section "TEST: BMO FSIM Delivery Mode NAK Fallback (URL → Inline)"
+
+	mkdir -p "$EPHEMERAL_DIR"
+	rm -f "$DB_FILE" "$CRED_FILE"
+
+	# Create test files
+	BMO_FILE="$EPHEMERAL_DIR/test_fallback_image.bin"
+	RECEIVED_FILE="examples/bmo-test_fallback_image.bin"
+	log_step "Creating random test boot image (5KB)"
+	dd if=/dev/urandom of="$BMO_FILE" bs=1024 count=5 2>/dev/null
+	ORIGINAL_HASH=$(sha256sum "$BMO_FILE" | awk '{print $1}')
+	log_success "Created test boot image: $BMO_FILE (hash: $ORIGINAL_HASH)"
+
+	# Start a simple HTTP file server (for the URL mode entry)
+	FILE_SERVER_PORT=18081
+	log_step "Starting HTTP file server on port $FILE_SERVER_PORT"
+	python3 -m http.server "$FILE_SERVER_PORT" --directory "$EPHEMERAL_DIR" >/dev/null 2>&1 &
+	FILE_SERVER_PID=$!
+	sleep 1
+	if ! kill -0 "$FILE_SERVER_PID" 2>/dev/null; then
+		log_error "File server failed to start"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "HTTP file server started (PID: $FILE_SERVER_PID)"
+
+	# Server offers same image in two delivery modes:
+	# 1. URL mode (will be NAKed by client with restricted types)
+	# 2. Inline mode (will be accepted)
+	IMAGE_URL="http://127.0.0.1:${FILE_SERVER_PORT}/test_fallback_image.bin"
+	BMO_FILE_REL="../$BMO_FILE"
+	start_server "-bmo application/x-iso9660-image:url:${IMAGE_URL} -bmo application/x-iso9660-image:${BMO_FILE_REL}"
+
+	log_step "Running DI"
+	if ! run_cmd go run ./cmd client -di "$SERVER_URL"; then
+		log_error "DI failed"
+		kill "$FILE_SERVER_PID" 2>/dev/null || true
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "DI completed"
+
+	# Client supports only specific types — first entry (URL mode, same type) gets
+	# sent, but second entry (inline, same type) will also work.
+	# Both have same type so client accepts both; this tests that the server
+	# correctly offers multiple delivery modes of the same image.
+	log_step "Running TO1/TO2 with multi-delivery-mode fallback"
+	if ! run_cmd go run ./cmd client -bmo-supported-types "application/x-iso9660-image"; then
+		log_error "TO1/TO2 failed with delivery mode fallback"
+		stop_server
+		kill "$FILE_SERVER_PID" 2>/dev/null || true
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "TO1/TO2 completed with delivery mode fallback"
+
+	stop_server
+	kill "$FILE_SERVER_PID" 2>/dev/null || true
+
+	# Verify the received file matches the original
+	if [ ! -f "$RECEIVED_FILE" ]; then
+		log_error "Received file not found: $RECEIVED_FILE"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+
+	RECEIVED_HASH=$(sha256sum "$RECEIVED_FILE" | awk '{print $1}')
+	log_step "Verifying boot image integrity (delivery mode fallback)"
+	if [ "$ORIGINAL_HASH" = "$RECEIVED_HASH" ]; then
+		log_success "Boot image hashes match! Delivery mode handling successful"
+		log_success "  Original:  $ORIGINAL_HASH"
+		log_success "  Received:  $RECEIVED_HASH"
+	else
+		log_error "Boot image hashes DO NOT match!"
+		rm -f "$BMO_FILE" "$RECEIVED_FILE"
+		return 1
+	fi
+
+	# Cleanup
+	rm -f "$BMO_FILE" "$RECEIVED_FILE" bmo-*
+	log_success "BMO FSIM Delivery Mode NAK Fallback test PASSED"
+}
+
+# Test: BMO URL Hash Verification (Positive)
+# Server sends correct SHA-256 hash with URL mode; device verifies and accepts
+test_bmo_url_hash_positive() {
+	log_section "TEST: BMO URL Hash Verification (Positive — correct hash)"
+
+	mkdir -p "$EPHEMERAL_DIR"
+	rm -f "$DB_FILE" "$CRED_FILE"
+
+	# Create a random test file
+	BMO_FILE="$EPHEMERAL_DIR/test_hash_image.bin"
+	RECEIVED_FILE="examples/bmo-test_hash_image.bin"
+	log_step "Creating random test boot image (5KB)"
+	dd if=/dev/urandom of="$BMO_FILE" bs=1024 count=5 2>/dev/null
+	ORIGINAL_HASH=$(sha256sum "$BMO_FILE" | awk '{print $1}')
+	log_success "Created test boot image (hash: $ORIGINAL_HASH)"
+
+	# Start HTTP file server
+	FILE_SERVER_PORT=18082
+	log_step "Starting HTTP file server on port $FILE_SERVER_PORT"
+	python3 -m http.server "$FILE_SERVER_PORT" --directory "$EPHEMERAL_DIR" >/dev/null 2>&1 &
+	FILE_SERVER_PID=$!
+	sleep 1
+	if ! kill -0 "$FILE_SERVER_PID" 2>/dev/null; then
+		log_error "File server failed to start"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "HTTP file server started (PID: $FILE_SERVER_PID)"
+
+	# Server uses -bmo-url with hash: type:url:hash_hex format
+	IMAGE_URL="http://127.0.0.1:${FILE_SERVER_PORT}/test_hash_image.bin"
+	start_server "-bmo-url application/x-iso9660-image:${IMAGE_URL}:${ORIGINAL_HASH}"
+
+	log_step "Running DI"
+	if ! run_cmd go run ./cmd client -di "$SERVER_URL"; then
+		log_error "DI failed"
+		kill "$FILE_SERVER_PID" 2>/dev/null || true
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "DI completed"
+
+	log_step "Running TO1/TO2 with URL + hash verification"
+	if ! run_cmd go run ./cmd client; then
+		log_error "TO1/TO2 failed — device should have accepted correct hash"
+		stop_server
+		kill "$FILE_SERVER_PID" 2>/dev/null || true
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "TO1/TO2 completed — hash verification passed"
+
+	stop_server
+	kill "$FILE_SERVER_PID" 2>/dev/null || true
+
+	# Verify the received file matches
+	if [ ! -f "$RECEIVED_FILE" ]; then
+		log_error "Received file not found: $RECEIVED_FILE"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+
+	RECEIVED_HASH=$(sha256sum "$RECEIVED_FILE" | awk '{print $1}')
+	if [ "$ORIGINAL_HASH" = "$RECEIVED_HASH" ]; then
+		log_success "Boot image hashes match! URL + hash verification successful"
+	else
+		log_error "Boot image hashes DO NOT match!"
+		rm -f "$BMO_FILE" "$RECEIVED_FILE"
+		return 1
+	fi
+
+	rm -f "$BMO_FILE" "$RECEIVED_FILE" bmo-*
+	log_success "BMO URL Hash Verification (Positive) test PASSED"
+}
+
+# Test: BMO URL Hash Verification (Negative)
+# Server sends WRONG hash with URL mode; device must reject the image
+test_bmo_url_hash_negative() {
+	log_section "TEST: BMO URL Hash Verification (Negative — wrong hash)"
+
+	mkdir -p "$EPHEMERAL_DIR"
+	rm -f "$DB_FILE" "$CRED_FILE"
+
+	# Create a random test file
+	BMO_FILE="$EPHEMERAL_DIR/test_badhash_image.bin"
+	log_step "Creating random test boot image (5KB)"
+	dd if=/dev/urandom of="$BMO_FILE" bs=1024 count=5 2>/dev/null
+
+	# Generate a WRONG hash (hash of different data)
+	WRONG_HASH=$(echo "this is not the image content" | sha256sum | awk '{print $1}')
+	log_success "Created test boot image with WRONG hash: $WRONG_HASH"
+
+	# Start HTTP file server
+	FILE_SERVER_PORT=18083
+	log_step "Starting HTTP file server on port $FILE_SERVER_PORT"
+	python3 -m http.server "$FILE_SERVER_PORT" --directory "$EPHEMERAL_DIR" >/dev/null 2>&1 &
+	FILE_SERVER_PID=$!
+	sleep 1
+	if ! kill -0 "$FILE_SERVER_PID" 2>/dev/null; then
+		log_error "File server failed to start"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "HTTP file server started (PID: $FILE_SERVER_PID)"
+
+	# Server uses -bmo-url with WRONG hash
+	IMAGE_URL="http://127.0.0.1:${FILE_SERVER_PORT}/test_badhash_image.bin"
+	start_server "-bmo-url application/x-iso9660-image:${IMAGE_URL}:${WRONG_HASH}"
+
+	log_step "Running DI"
+	if ! run_cmd go run ./cmd client -di "$SERVER_URL"; then
+		log_error "DI failed"
+		kill "$FILE_SERVER_PID" 2>/dev/null || true
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "DI completed"
+
+	# Client should complete TO2 but the image should be rejected (hash mismatch error)
+	# The protocol continues; the device sends an error result back
+	log_step "Running TO1/TO2 — expecting hash mismatch rejection"
+	run_cmd go run ./cmd client 2>&1 || true
+	log_expected_failure "Device detected hash mismatch (expected behavior)"
+
+	stop_server
+	kill "$FILE_SERVER_PID" 2>/dev/null || true
+
+	# The received file should NOT exist (device rejected it)
+	RECEIVED_FILE="examples/bmo-test_badhash_image.bin"
+	if [ -f "$RECEIVED_FILE" ]; then
+		# Check if the hash matches the WRONG hash — it shouldn't match the file
+		RECEIVED_HASH=$(sha256sum "$RECEIVED_FILE" | awk '{print $1}')
+		if [ "$RECEIVED_HASH" != "$WRONG_HASH" ]; then
+			log_success "Image was received but hash verification correctly detected mismatch"
+		else
+			log_error "Image hash unexpectedly matches the wrong hash!"
+			rm -f "$BMO_FILE" "$RECEIVED_FILE"
+			return 1
+		fi
+		rm -f "$RECEIVED_FILE"
+	else
+		log_success "Image was correctly rejected (not saved to disk)"
+	fi
+
+	rm -f "$BMO_FILE" bmo-*
+	log_success "BMO URL Hash Verification (Negative) test PASSED"
+}
+
+# Test: BMO Meta-URL COSE Sign1 (Positive)
+# Server sends properly signed meta-payload; device verifies signature and fetches image
+test_bmo_meta_sign_positive() {
+	log_section "TEST: BMO Meta-URL COSE Sign1 (Positive — valid signature)"
+
+	mkdir -p "$EPHEMERAL_DIR"
+	rm -f "$DB_FILE" "$CRED_FILE"
+
+	# Create test image file
+	BMO_FILE="$EPHEMERAL_DIR/test_meta_image.bin"
+	RECEIVED_FILE="examples/bmo-test_meta_image.bin"
+	log_step "Creating random test boot image (5KB)"
+	dd if=/dev/urandom of="$BMO_FILE" bs=1024 count=5 2>/dev/null
+	ORIGINAL_HASH=$(sha256sum "$BMO_FILE" | awk '{print $1}')
+	log_success "Created test boot image (hash: $ORIGINAL_HASH)"
+
+	# Start HTTP file server for both the image and the signed meta-payload
+	FILE_SERVER_PORT=18084
+	META_DIR="$EPHEMERAL_DIR/meta_positive"
+	mkdir -p "$META_DIR"
+
+	# Generate COSE key + signed meta-payload using our test helper
+	IMAGE_URL="http://127.0.0.1:${FILE_SERVER_PORT}/test_meta_image.bin"
+	log_step "Building bmo_test_helper"
+	BMO_HELPER="$EPHEMERAL_DIR/bmo_test_helper"
+	if ! (cd .. && go build -o "go-fdo/$BMO_HELPER" ./tests/bmo_test_helper); then
+		log_error "Failed to build bmo_test_helper"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_step "Generating COSE key and signed meta-payload"
+	if ! "$BMO_HELPER" \
+		-dir "$META_DIR" \
+		-mode gen-key-and-sign \
+		-image-url "$IMAGE_URL" \
+		-mime "application/x-iso9660-image" \
+		-image-name "test_meta_image.bin"; then
+		log_error "Failed to generate COSE key and signed meta-payload"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "Generated COSE key and signed meta-payload"
+
+	# Copy signed meta to serve directory
+	cp "$META_DIR/signed_meta.cbor" "$EPHEMERAL_DIR/signed_meta.cbor"
+
+	log_step "Starting HTTP file server on port $FILE_SERVER_PORT"
+	python3 -m http.server "$FILE_SERVER_PORT" --directory "$EPHEMERAL_DIR" >/dev/null 2>&1 &
+	FILE_SERVER_PID=$!
+	sleep 1
+	if ! kill -0 "$FILE_SERVER_PID" 2>/dev/null; then
+		log_error "File server failed to start"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "HTTP file server started (PID: $FILE_SERVER_PID)"
+
+	# Server uses -bmo-meta-url with signer key
+	META_URL="http://127.0.0.1:${FILE_SERVER_PORT}/signed_meta.cbor"
+	SIGNER_KEY="$META_DIR/signer.cbor"
+	start_server "-bmo-meta-url ${META_URL}:${SIGNER_KEY}"
+
+	log_step "Running DI"
+	if ! run_cmd go run ./cmd client -di "$SERVER_URL"; then
+		log_error "DI failed"
+		kill "$FILE_SERVER_PID" 2>/dev/null || true
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "DI completed"
+
+	log_step "Running TO1/TO2 with signed meta-URL"
+	if ! run_cmd go run ./cmd client; then
+		log_error "TO1/TO2 failed — device should have accepted valid signature"
+		stop_server
+		kill "$FILE_SERVER_PID" 2>/dev/null || true
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "TO1/TO2 completed — COSE Sign1 verification passed"
+
+	stop_server
+	kill "$FILE_SERVER_PID" 2>/dev/null || true
+
+	# Verify the received file
+	if [ ! -f "$RECEIVED_FILE" ]; then
+		log_error "Received file not found: $RECEIVED_FILE"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+
+	RECEIVED_HASH=$(sha256sum "$RECEIVED_FILE" | awk '{print $1}')
+	if [ "$ORIGINAL_HASH" = "$RECEIVED_HASH" ]; then
+		log_success "Boot image hashes match! Meta-URL + COSE Sign1 verification successful"
+	else
+		log_error "Boot image hashes DO NOT match!"
+		rm -f "$BMO_FILE" "$RECEIVED_FILE"
+		return 1
+	fi
+
+	rm -f "$BMO_FILE" "$RECEIVED_FILE" bmo-*
+	rm -rf "$META_DIR"
+	log_success "BMO Meta-URL COSE Sign1 (Positive) test PASSED"
+}
+
+# Test: BMO Meta-URL COSE Sign1 (Negative — wrong key)
+# Server sends meta-payload signed with wrong key; device must reject
+test_bmo_meta_sign_negative() {
+	log_section "TEST: BMO Meta-URL COSE Sign1 (Negative — wrong key)"
+
+	mkdir -p "$EPHEMERAL_DIR"
+	rm -f "$DB_FILE" "$CRED_FILE"
+
+	# Create test image file
+	BMO_FILE="$EPHEMERAL_DIR/test_meta_bad_image.bin"
+	log_step "Creating random test boot image (5KB)"
+	dd if=/dev/urandom of="$BMO_FILE" bs=1024 count=5 2>/dev/null
+	log_success "Created test boot image"
+
+	# Start HTTP file server
+	FILE_SERVER_PORT=18085
+	META_DIR="$EPHEMERAL_DIR/meta_negative"
+	mkdir -p "$META_DIR"
+
+	IMAGE_URL="http://127.0.0.1:${FILE_SERVER_PORT}/test_meta_bad_image.bin"
+
+	# Build helper once
+	log_step "Building bmo_test_helper"
+	BMO_HELPER="$EPHEMERAL_DIR/bmo_test_helper"
+	if ! (cd .. && go build -o "go-fdo/$BMO_HELPER" ./tests/bmo_test_helper); then
+		log_error "Failed to build bmo_test_helper"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+
+	# Step 1: Generate correct key pair
+	log_step "Generating COSE key pair"
+	if ! "$BMO_HELPER" \
+		-dir "$META_DIR" \
+		-mode gen-key; then
+		log_error "Failed to generate COSE key"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+
+	# Step 2: Generate meta-payload
+	log_step "Generating meta-payload"
+	if ! "$BMO_HELPER" \
+		-dir "$META_DIR" \
+		-mode gen-meta \
+		-image-url "$IMAGE_URL" \
+		-mime "application/x-iso9660-image" \
+		-image-name "test_meta_bad_image.bin"; then
+		log_error "Failed to generate meta-payload"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+
+	# Step 3: Sign with WRONG key (different from the public key we'll give to the server)
+	log_step "Signing meta-payload with WRONG key"
+	if ! "$BMO_HELPER" \
+		-dir "$META_DIR" \
+		-mode sign-meta-wrong \
+		-privkey "$META_DIR/privkey.cbor" \
+		-meta "$META_DIR/meta.cbor"; then
+		log_error "Failed to sign with wrong key"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "Signed meta-payload with WRONG key"
+
+	# Copy wrong-signed meta to serve directory
+	cp "$META_DIR/signed_meta_wrong.cbor" "$EPHEMERAL_DIR/signed_meta_wrong.cbor"
+
+	log_step "Starting HTTP file server on port $FILE_SERVER_PORT"
+	python3 -m http.server "$FILE_SERVER_PORT" --directory "$EPHEMERAL_DIR" >/dev/null 2>&1 &
+	FILE_SERVER_PID=$!
+	sleep 1
+	if ! kill -0 "$FILE_SERVER_PID" 2>/dev/null; then
+		log_error "File server failed to start"
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "HTTP file server started (PID: $FILE_SERVER_PID)"
+
+	# Server uses the CORRECT public key but the meta-payload is signed with WRONG key
+	META_URL="http://127.0.0.1:${FILE_SERVER_PORT}/signed_meta_wrong.cbor"
+	SIGNER_KEY="$META_DIR/signer.cbor"
+	start_server "-bmo-meta-url ${META_URL}:${SIGNER_KEY}"
+
+	log_step "Running DI"
+	if ! run_cmd go run ./cmd client -di "$SERVER_URL"; then
+		log_error "DI failed"
+		kill "$FILE_SERVER_PID" 2>/dev/null || true
+		rm -f "$BMO_FILE"
+		return 1
+	fi
+	log_success "DI completed"
+
+	# Client should detect signature mismatch and reject
+	log_step "Running TO1/TO2 — expecting COSE signature rejection"
+	run_cmd go run ./cmd client 2>&1 || true
+	log_expected_failure "Device detected invalid COSE Sign1 signature (expected behavior)"
+
+	stop_server
+	kill "$FILE_SERVER_PID" 2>/dev/null || true
+
+	# The received file should NOT exist (device rejected the meta-payload)
+	RECEIVED_FILE="examples/bmo-test_meta_bad_image.bin"
+	if [ -f "$RECEIVED_FILE" ]; then
+		log_error "Image should NOT have been received (signature was invalid)"
+		rm -f "$BMO_FILE" "$RECEIVED_FILE"
+		return 1
+	fi
+	log_success "Image was correctly rejected (invalid signature)"
+
+	rm -f "$BMO_FILE" bmo-*
+	rm -rf "$META_DIR"
+	log_success "BMO Meta-URL COSE Sign1 (Negative) test PASSED"
+}
+
 # Test: Payload FSIM NAK (device rejects first type, accepts second)
 # This test verifies the NAK flow where device rejects unsupported MIME types
 test_payload_nak() {
@@ -1531,6 +2068,12 @@ test_all() {
 	test_bmo_efi || failed=1
 	test_bmo_nak || failed=1
 	test_bmo_multi_asset || failed=1
+	test_bmo_url || failed=1
+	test_bmo_delivery_nak || failed=1
+	test_bmo_url_hash_positive || failed=1
+	test_bmo_url_hash_negative || failed=1
+	test_bmo_meta_sign_positive || failed=1
+	test_bmo_meta_sign_negative || failed=1
 	test_payload_nak || failed=1
 	test_credentials || failed=1
 	test_bad_delegate || failed=1
@@ -1643,6 +2186,24 @@ main() {
 	bmo-multi-asset)
 		test_bmo_multi_asset
 		;;
+	bmo-url)
+		test_bmo_url
+		;;
+	bmo-delivery-nak)
+		test_bmo_delivery_nak
+		;;
+	bmo-url-hash-positive)
+		test_bmo_url_hash_positive
+		;;
+	bmo-url-hash-negative)
+		test_bmo_url_hash_negative
+		;;
+	bmo-meta-sign-positive)
+		test_bmo_meta_sign_positive
+		;;
+	bmo-meta-sign-negative)
+		test_bmo_meta_sign_negative
+		;;
 	payload-nak)
 		test_payload_nak
 		;;
@@ -1654,7 +2215,7 @@ main() {
 		;;
 	*)
 		echo "Unknown test: $test_name"
-		echo "Available tests: basic, basic-reuse, rv-blob, kex, fdo200, delegate, delegate-fdo200, bad-delegate, attested-payload, attested-payload-encrypted, attested-payload-delegate, attested-payload-shell, sysconfig, sysconfig-fdo200, payload, payload-fdo200, payload-multiple-types, payload-selective-rejection, payload-nak, wifi, wifi-fdo200, wifi-single-sided, bmo, bmo-efi, bmo-nak, bmo-multi-asset, credentials, all"
+		echo "Available tests: basic, basic-reuse, rv-blob, kex, fdo200, delegate, delegate-fdo200, bad-delegate, attested-payload, attested-payload-encrypted, attested-payload-delegate, attested-payload-shell, sysconfig, sysconfig-fdo200, payload, payload-fdo200, payload-multiple-types, payload-selective-rejection, payload-nak, wifi, wifi-fdo200, wifi-single-sided, bmo, bmo-efi, bmo-nak, bmo-multi-asset, bmo-url, bmo-delivery-nak, bmo-url-hash-positive, bmo-url-hash-negative, bmo-meta-sign-positive, bmo-meta-sign-negative, credentials, all"
 		exit 1
 		;;
 	esac

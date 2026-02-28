@@ -16,6 +16,9 @@ type FSIMConfig struct {
 	BMOFile         string   `yaml:"bmo_file"`
 	BMOImageType    string   `yaml:"bmo_image_type"`
 	BMOFiles        []string `yaml:"bmo_files"`
+	BMOTlsCA        string   `yaml:"bmo_tls_ca"`
+	BMOExpectedHash string   `yaml:"bmo_expected_hash"`
+	BMOMetaSigner   string   `yaml:"bmo_meta_signer"`
 	WiFiConfigFile  string   `yaml:"wifi_config_file"`
 	Credentials     []string `yaml:"credentials"`
 	PubkeyRequests  []string `yaml:"pubkey_requests"`
