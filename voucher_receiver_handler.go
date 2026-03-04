@@ -6,338 +6,235 @@ package main
 import (
 	"context"
 	"crypto"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/fido-device-onboard/go-fdo"
+	"github.com/fido-device-onboard/go-fdo/cbor"
 	"github.com/fido-device-onboard/go-fdo/protocol"
 	"github.com/fido-device-onboard/go-fdo/sqlite"
+	"github.com/fido-device-onboard/go-fdo/transfer"
 )
 
-const maxVoucherSize = 10 * 1024 * 1024 // 10MB
+// setupVoucherReceiver configures and registers the voucher push receiver with
+// FDOKeyAuth (primary) and Bearer token (secondary) authentication on the given mux.
+// It registers:
+//   - POST {endpoint}            — voucher push (via library HTTPPushReceiver)
+//   - POST {endpoint}/auth/hello — FDOKeyAuth handshake step 1
+//   - POST {endpoint}/auth/prove — FDOKeyAuth handshake step 2
+func setupVoucherReceiver(
+	cfg *Config,
+	mux *http.ServeMux,
+	state *sqlite.DB,
+	serverKey crypto.Signer,
+	deviceStorage *DeviceStorageManager,
+	dispatcher *TO0Dispatcher,
+) {
+	tokenManager := NewVoucherReceiverTokenManager(state.DB())
 
-// VoucherReceiverHandler handles HTTP requests for receiving vouchers
-type VoucherReceiverHandler struct {
-	config        *Config
-	db            *sqlite.DB
-	tokenManager  *VoucherReceiverTokenManager
-	deviceStorage *DeviceStorageManager
-	dispatcher    *TO0Dispatcher
+	// FDOKeyAuth token store for push sessions
+	pushTokenStore := newPushTokenStore(cfg.VoucherReceiver.SessionTTL)
+
+	// Set up FDOKeyAuth server for push endpoint
+	authMethod := strings.ToLower(cfg.VoucherReceiver.AuthMethod)
+	if authMethod == "" {
+		authMethod = "both"
+	}
+
+	if authMethod == "fdokeyauth" || authMethod == "both" {
+		if serverKey == nil {
+			slog.Error("voucher receiver: FDOKeyAuth requires server key (enable DID or provide owner key)")
+		} else {
+			authServer := &transfer.FDOKeyAuthServer{
+				ServerKey: serverKey,
+				HashAlg:   protocol.Sha256Hash,
+				Sessions: transfer.NewSessionStore(
+					cfg.VoucherReceiver.SessionTTL,
+					cfg.VoucherReceiver.MaxSessions,
+				),
+				IssueToken: func(callerKey protocol.PublicKey) (string, time.Time, error) {
+					return pushTokenStore.issue(callerKey)
+				},
+			}
+			authServer.RegisterHandlers(mux, cfg.VoucherReceiver.Endpoint)
+			slog.Info("voucher receiver: FDOKeyAuth endpoints registered",
+				"hello", cfg.VoucherReceiver.Endpoint+"/auth/hello",
+				"prove", cfg.VoucherReceiver.Endpoint+"/auth/prove")
+		}
+	}
+
+	// Build hybrid authenticator
+	authenticator := buildPushAuthenticator(cfg, tokenManager, pushTokenStore)
+
+	// Build the library push receiver
+	pushStore := NewPullVoucherStore(deviceStorage.VoucherDir)
+	receiver := &transfer.HTTPPushReceiver{
+		Store:        pushStore,
+		Authenticate: authenticator,
+		OnReceive: func(ctx context.Context, data *transfer.VoucherData, storagePath string) {
+			// Audit logging
+			var guid protocol.GUID
+			if data.Voucher != nil {
+				guid = data.Voucher.Header.Val.GUID
+			}
+			if err := tokenManager.LogReceivedVoucher(ctx, guid, data.SerialNumber, data.ModelNumber, "", "", "", 0); err != nil {
+				slog.Error("voucher receiver: failed to log audit entry", "guid", data.GUID, "error", err)
+			}
+
+			// Submit to TO0 dispatcher for RV registration
+			if dispatcher != nil && !cfg.TO0.Bypass && data.Voucher != nil {
+				dispatcher.SubmitVoucher(ctx, data.Voucher)
+			}
+		},
+	}
+
+	mux.Handle("POST "+cfg.VoucherReceiver.Endpoint, receiver)
+
+	slog.Info("Voucher receiver enabled",
+		"endpoint", cfg.VoucherReceiver.Endpoint,
+		"auth_method", authMethod,
+		"validate_ownership", cfg.VoucherReceiver.ValidateOwnership,
+		"require_auth", cfg.VoucherReceiver.RequireAuth)
 }
 
-// NewVoucherReceiverHandler creates a new voucher receiver handler
-func NewVoucherReceiverHandler(config *Config, db *sqlite.DB, tokenManager *VoucherReceiverTokenManager, deviceStorage *DeviceStorageManager, dispatcher *TO0Dispatcher) *VoucherReceiverHandler {
-	return &VoucherReceiverHandler{
-		config:        config,
-		db:            db,
-		tokenManager:  tokenManager,
-		deviceStorage: deviceStorage,
-		dispatcher:    dispatcher,
+// buildPushAuthenticator creates a PushReceiverAuth function that checks
+// FDOKeyAuth session tokens first, then falls back to Bearer tokens.
+func buildPushAuthenticator(
+	cfg *Config,
+	tokenManager *VoucherReceiverTokenManager,
+	pushTokenStore *pushTokenStore,
+) transfer.PushReceiverAuth {
+	authMethod := strings.ToLower(cfg.VoucherReceiver.AuthMethod)
+	if authMethod == "" {
+		authMethod = "both"
+	}
+
+	return func(r *http.Request) bool {
+		// If auth not required, allow all
+		if !cfg.VoucherReceiver.RequireAuth {
+			return true
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			return false
+		}
+
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 {
+			return false
+		}
+
+		token := parts[1]
+
+		// Try FDOKeyAuth session token (primary)
+		if authMethod == "fdokeyauth" || authMethod == "both" {
+			if strings.EqualFold(parts[0], "Bearer") {
+				if _, err := pushTokenStore.validate(token); err == nil {
+					return true
+				}
+			}
+		}
+
+		// Try static Bearer tokens (secondary / fallback)
+		if authMethod == "bearer" || authMethod == "both" {
+			if strings.EqualFold(parts[0], "Bearer") {
+				// Check global token
+				if cfg.VoucherReceiver.GlobalToken != "" && token == cfg.VoucherReceiver.GlobalToken {
+					return true
+				}
+				// Check database tokens
+				if tokenManager != nil {
+					ctx := r.Context()
+					valid, err := tokenManager.ValidateReceiverToken(ctx, token)
+					if err != nil {
+						slog.Error("voucher receiver: token validation error", "error", err)
+						return false
+					}
+					if valid {
+						return true
+					}
+				}
+			}
+		}
+
+		return false
 	}
 }
 
-// VoucherResponse is the JSON response structure
-type VoucherResponse struct {
-	Status    string `json:"status"`
-	VoucherID string `json:"voucher_id,omitempty"`
-	Message   string `json:"message"`
-	Timestamp string `json:"timestamp"`
+// pushTokenStore manages session tokens issued after successful FDOKeyAuth
+// for push operations. Mirrors the pullTokenStore pattern used by the pull service.
+type pushTokenStore struct {
+	mu     sync.RWMutex
+	tokens map[string]*pushToken
+	ttl    time.Duration
 }
 
-// ServeHTTP handles the HTTP request
-func (h *VoucherReceiverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+type pushToken struct {
+	callerKeyFingerprint []byte
+	expiresAt            time.Time
+}
 
-	// Only accept POST
-	if r.Method != http.MethodPost {
-		h.sendError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
+func newPushTokenStore(ttl time.Duration) *pushTokenStore {
+	if ttl == 0 {
+		ttl = 5 * time.Minute
 	}
-
-	// Authenticate request
-	sourceIP := h.getSourceIP(r)
-	tokenUsed, authenticated := h.authenticate(ctx, r)
-	if !authenticated {
-		slog.Warn("voucher receiver: authentication failed", "source_ip", sourceIP)
-		h.sendError(w, http.StatusUnauthorized, "authentication required or invalid token")
-		return
+	return &pushTokenStore{
+		tokens: make(map[string]*pushToken),
+		ttl:    ttl,
 	}
+}
 
-	// Parse multipart form
-	if err := r.ParseMultipartForm(maxVoucherSize); err != nil {
-		slog.Warn("voucher receiver: failed to parse multipart form", "error", err, "source_ip", sourceIP)
-		h.sendError(w, http.StatusBadRequest, "failed to parse multipart data")
-		return
-	}
-
-	// Get voucher file
-	file, header, err := r.FormFile("voucher")
+func (s *pushTokenStore) issue(callerKey protocol.PublicKey) (string, time.Time, error) {
+	keyBytes, err := cbor.Marshal(callerKey)
 	if err != nil {
-		slog.Warn("voucher receiver: voucher file missing", "error", err, "source_ip", sourceIP)
-		h.sendError(w, http.StatusBadRequest, "voucher file missing")
-		return
+		return "", time.Time{}, fmt.Errorf("failed to encode caller key: %w", err)
 	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			slog.Warn("voucher receiver: failed to close file", "error", err)
-		}
-	}()
+	hash := sha256.Sum256(keyBytes)
+	fingerprint := hash[:]
 
-	// Check file size
-	if header.Size > maxVoucherSize {
-		slog.Warn("voucher receiver: voucher file too large", "size", header.Size, "source_ip", sourceIP)
-		h.sendError(w, http.StatusRequestEntityTooLarge, "voucher file exceeds size limit")
-		return
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return "", time.Time{}, fmt.Errorf("failed to generate token: %w", err)
 	}
+	token := hex.EncodeToString(tokenBytes)
+	expiresAt := time.Now().Add(s.ttl)
 
-	// Read voucher data
-	voucherData, err := io.ReadAll(io.LimitReader(file, maxVoucherSize))
-	if err != nil {
-		slog.Error("voucher receiver: failed to read voucher file", "error", err, "source_ip", sourceIP)
-		h.sendError(w, http.StatusInternalServerError, "failed to read voucher file")
-		return
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	// Parse voucher
-	voucher, err := h.parseVoucher(voucherData)
-	if err != nil {
-		slog.Warn("voucher receiver: failed to parse voucher", "error", err, "source_ip", sourceIP)
-		h.sendError(w, http.StatusBadRequest, fmt.Sprintf("invalid voucher format: %v", err))
-		return
-	}
-
-	guid := voucher.Header.Val.GUID
-	guidStr := hex.EncodeToString(guid[:])
-
-	// Get optional metadata
-	serial := r.FormValue("serial")
-	model := r.FormValue("model")
-	manufacturer := r.FormValue("manufacturer")
-
-	slog.Info("voucher receiver: received voucher",
-		"guid", guidStr,
-		"serial", serial,
-		"model", model,
-		"manufacturer", manufacturer,
-		"source_ip", sourceIP,
-		"size", header.Size)
-
-	// Validate ownership if configured
-	if h.config.VoucherReceiver.ValidateOwnership {
-		valid, err := h.validateOwnership(ctx, voucher)
-		if err != nil {
-			slog.Error("voucher receiver: ownership validation error", "guid", guidStr, "error", err)
-			h.sendError(w, http.StatusInternalServerError, "ownership validation failed")
-			return
-		}
-		if !valid {
-			slog.Warn("voucher receiver: voucher not signed to our owner key", "guid", guidStr, "source_ip", sourceIP)
-			h.sendError(w, http.StatusForbidden, "voucher not signed to this owner")
-			return
+	// GC expired tokens
+	now := time.Now()
+	for k, v := range s.tokens {
+		if now.After(v.expiresAt) {
+			delete(s.tokens, k)
 		}
 	}
 
-	// Check if voucher already exists
-	voucherPath := filepath.Join(h.deviceStorage.VoucherDir, guidStr+".fdoov")
-	if _, err := os.Stat(voucherPath); err == nil {
-		slog.Warn("voucher receiver: voucher already exists", "guid", guidStr, "source_ip", sourceIP)
-		h.sendError(w, http.StatusConflict, "voucher already exists for this device")
-		return
+	s.tokens[token] = &pushToken{
+		callerKeyFingerprint: fingerprint,
+		expiresAt:            expiresAt,
 	}
 
-	// Save voucher to file
-	if err := h.saveVoucher(voucherPath, voucherData); err != nil {
-		slog.Error("voucher receiver: failed to save voucher", "guid", guidStr, "error", err)
-		h.sendError(w, http.StatusInternalServerError, "failed to save voucher")
-		return
-	}
-
-	// Log to audit table
-	if err := h.tokenManager.LogReceivedVoucher(ctx, guid, serial, model, manufacturer, sourceIP, tokenUsed, header.Size); err != nil {
-		slog.Error("voucher receiver: failed to log audit entry", "guid", guidStr, "error", err)
-	}
-
-	slog.Info("voucher receiver: voucher accepted and stored",
-		"guid", guidStr,
-		"path", voucherPath,
-		"source_ip", sourceIP)
-
-	// Submit voucher to TO0 dispatcher for RV registration
-	if h.dispatcher != nil && !h.config.TO0.Bypass {
-		h.dispatcher.SubmitVoucher(ctx, voucher)
-	}
-
-	// Send success response
-	h.sendSuccess(w, guidStr, "Voucher accepted and stored")
+	return token, expiresAt, nil
 }
 
-// authenticate checks if the request is authenticated
-func (h *VoucherReceiverHandler) authenticate(ctx context.Context, r *http.Request) (string, bool) {
-	// If auth not required, allow
-	if !h.config.VoucherReceiver.RequireAuth {
-		return "", true
+func (s *pushTokenStore) validate(token string) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	t, ok := s.tokens[token]
+	if !ok {
+		return nil, fmt.Errorf("token not found")
 	}
-
-	// Get Authorization header
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		return "", false
+	if time.Now().After(t.expiresAt) {
+		return nil, fmt.Errorf("token expired")
 	}
-
-	// Parse Bearer token
-	parts := strings.SplitN(authHeader, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		return "", false
-	}
-
-	token := parts[1]
-
-	// Check global token first
-	if h.config.VoucherReceiver.GlobalToken != "" && token == h.config.VoucherReceiver.GlobalToken {
-		return "global", true
-	}
-
-	// Check database tokens
-	valid, err := h.tokenManager.ValidateReceiverToken(ctx, token)
-	if err != nil {
-		slog.Error("voucher receiver: token validation error", "error", err)
-		return "", false
-	}
-
-	if valid {
-		return token, true
-	}
-
-	return "", false
-}
-
-// getSourceIP extracts the source IP from the request
-func (h *VoucherReceiverHandler) getSourceIP(r *http.Request) string {
-	// Check X-Forwarded-For header first
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
-	}
-
-	// Check X-Real-IP header
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-
-	// Fall back to RemoteAddr
-	ip := r.RemoteAddr
-	if idx := strings.LastIndex(ip, ":"); idx != -1 {
-		ip = ip[:idx]
-	}
-	return ip
-}
-
-// parseVoucher parses a voucher from PEM or raw CBOR data.
-// Delegates to the library's ParseVoucherString (handles both PEM and CBOR).
-func (h *VoucherReceiverHandler) parseVoucher(data []byte) (*fdo.Voucher, error) {
-	return fdo.ParseVoucherString(string(data))
-}
-
-// validateOwnership checks if the voucher is signed to one of our owner keys
-func (h *VoucherReceiverHandler) validateOwnership(ctx context.Context, voucher *fdo.Voucher) (bool, error) {
-	// Get the last owner public key from the voucher
-	voucherOwnerKey, err := voucher.OwnerPublicKey()
-	if err != nil {
-		return false, fmt.Errorf("failed to extract owner public key from voucher: %w", err)
-	}
-
-	// Get all our owner keys
-	keyTypes := []protocol.KeyType{
-		protocol.Secp256r1KeyType,
-		protocol.Secp384r1KeyType,
-		protocol.Rsa2048RestrKeyType,
-		protocol.RsaPkcsKeyType,
-	}
-
-	for _, keyType := range keyTypes {
-		ourKey, _, err := h.db.OwnerKey(ctx, keyType, 3072)
-		if err != nil {
-			// Key type not available, skip
-			continue
-		}
-
-		// Compare public keys
-		if ourKey.Public().(interface{ Equal(crypto.PublicKey) bool }).Equal(voucherOwnerKey) {
-			return true, nil
-		}
-	}
-
-	return false, nil
-}
-
-// saveVoucher saves the voucher to disk in PEM format.
-// Uses the library's FormatVoucherCBORToPEM for encoding and atomic file write.
-func (h *VoucherReceiverHandler) saveVoucher(path string, data []byte) error {
-	// Ensure directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	// Normalize to PEM: if already PEM keep as-is, otherwise convert CBOR→PEM
-	var pemBytes []byte
-	if strings.Contains(string(data), "-----BEGIN OWNERSHIP VOUCHER-----") {
-		pemBytes = data
-	} else {
-		pemBytes = fdo.FormatVoucherCBORToPEM(data)
-	}
-
-	// Write to temp file first, then rename (atomic)
-	tempPath := path + ".tmp"
-	if err := os.WriteFile(tempPath, pemBytes, 0644); err != nil {
-		return fmt.Errorf("failed to write temp file: %w", err)
-	}
-
-	if err := os.Rename(tempPath, path); err != nil {
-		if removeErr := os.Remove(tempPath); removeErr != nil {
-			slog.Warn("failed to remove temp file", "path", tempPath, "error", removeErr)
-		}
-		return fmt.Errorf("failed to rename temp file: %w", err)
-	}
-
-	return nil
-}
-
-// sendSuccess sends a successful JSON response
-func (h *VoucherReceiverHandler) sendSuccess(w http.ResponseWriter, voucherID, message string) {
-	resp := VoucherResponse{
-		Status:    "accepted",
-		VoucherID: voucherID,
-		Message:   message,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("failed to encode success response", "error", err)
-	}
-}
-
-// sendError sends an error JSON response
-func (h *VoucherReceiverHandler) sendError(w http.ResponseWriter, statusCode int, message string) {
-	resp := VoucherResponse{
-		Status:    "error",
-		Message:   message,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("failed to encode error response", "error", err)
-	}
+	return t.callerKeyFingerprint, nil
 }

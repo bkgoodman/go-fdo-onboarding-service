@@ -359,9 +359,12 @@ func DefaultConfig() *Config {
 		VoucherReceiver: VoucherReceiverConfig{
 			Enabled:           false,
 			Endpoint:          "/api/v1/vouchers",
+			AuthMethod:        "both",
 			GlobalToken:       "",
 			ValidateOwnership: true,
 			RequireAuth:       true,
+			SessionTTL:        5 * time.Minute,
+			MaxSessions:       100,
 		},
 		DID: DIDConfig{
 			Host:          "",

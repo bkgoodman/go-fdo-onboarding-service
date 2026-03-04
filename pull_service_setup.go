@@ -40,8 +40,8 @@ func setupPullService(cfg *Config, mux *http.ServeMux, holderKey crypto.Signer, 
 
 	tokenStore := newPullTokenStore(tokenTTL)
 
-	pullAuthServer := &transfer.PullAuthServer{
-		HolderKey:              holderKey,
+	pullAuthServer := &transfer.FDOKeyAuthServer{
+		ServerKey:              holderKey,
 		HashAlg:                protocol.Sha256Hash,
 		Sessions:               sessionStore,
 		RevealVoucherExistence: cfg.PullService.RevealVoucherExistence,
@@ -51,7 +51,7 @@ func setupPullService(cfg *Config, mux *http.ServeMux, holderKey crypto.Signer, 
 	}
 
 	pullAuthServer.RegisterHandlers(mux)
-	slog.Info("pull service: PullAuth endpoints registered",
+	slog.Info("pull service: FDOKeyAuth endpoints registered",
 		"session_ttl", cfg.PullService.SessionTTL,
 		"token_ttl", tokenTTL)
 

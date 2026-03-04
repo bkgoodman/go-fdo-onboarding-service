@@ -93,6 +93,30 @@
 
 **Scope:** BMO only — `fdo.payload` does not define delivery modes per spec.
 
+### 11. ✅ COMPLETED: FDOKeyAuth Push Receiver Migration
+
+**Status:** ✅ COMPLETED - Voucher receiver now supports FDOKeyAuth (primary) + Bearer token (secondary)
+
+**Implementation:**
+- ✅ Replaced custom `VoucherReceiverHandler` (344 lines) with library `transfer.HTTPPushReceiver`
+- ✅ Added `transfer.FDOKeyAuthServer` for push endpoint auth (`{endpoint}/auth/hello`, `{endpoint}/auth/prove`)
+- ✅ Hybrid authenticator: FDOKeyAuth session tokens (primary), Bearer tokens (secondary fallback)
+- ✅ New config fields: `auth_method` ("fdokeyauth"/"bearer"/"both"), `session_ttl`, `max_sessions`
+- ✅ DID setup moved before voucher receiver + pull service (both need owner signing key)
+- ✅ Fixed library renames: `PullAuthClient` → `FDOKeyAuthClient`, `PullAuthServer` → `FDOKeyAuthServer`
+- ✅ Unit tests: 13 tests (pushTokenStore + buildPushAuthenticator — positive + negative)
+
+**Files Modified:**
+- ✅ `voucher_receiver_handler.go` — Rewritten: `setupVoucherReceiver()`, `buildPushAuthenticator()`, `pushTokenStore`
+- ✅ `voucher_receiver_config.go` — Added `AuthMethod`, `SessionTTL`, `MaxSessions` fields
+- ✅ `config.go` — Updated defaults for new VoucherReceiverConfig fields
+- ✅ `main.go` — DID setup first, then `setupVoucherReceiver()`, then pull service
+- ✅ `pull_command.go` — `PullAuthClient` → `FDOKeyAuthClient` field renames
+- ✅ `pull_service_setup.go` — `PullAuthServer` → `FDOKeyAuthServer` field renames
+
+**Files Added:**
+- ✅ `voucher_receiver_handler_test.go` — 13 unit tests
+
 ## Medium Priority
 
 ### 3. Add Error Handling and Logging

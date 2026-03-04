@@ -969,25 +969,25 @@ func startServer(ctx context.Context, state *sqlite.DB, deviceStorage *DeviceSto
 	mux := http.NewServeMux()
 	mux.Handle("POST /fdo/{fdoVer}/msg/{msg}", handler)
 
-	// Add voucher receiver endpoint if enabled
-	if config.VoucherReceiver.Enabled {
-		tokenManager := NewVoucherReceiverTokenManager(state.DB())
-		voucherHandler := NewVoucherReceiverHandler(config, state, tokenManager, deviceStorage, dispatcher)
-		mux.Handle("POST "+config.VoucherReceiver.Endpoint, voucherHandler)
-		slog.Info("Voucher receiver enabled",
-			"endpoint", config.VoucherReceiver.Endpoint,
-			"validate_ownership", config.VoucherReceiver.ValidateOwnership,
-			"require_auth", config.VoucherReceiver.RequireAuth)
+	// Set up DID document serving — must happen before voucher receiver and pull service
+	// because FDOKeyAuth for both push and pull requires the owner signing key.
+	var didSigner crypto.Signer
+	if config.DID.ServeDocument || config.PullService.Enabled || config.VoucherReceiver.Enabled {
+		var didErr error
+		didSigner, didErr = setupDID(ctx, config, mux, state)
+		if didErr != nil {
+			slog.Warn("DID setup failed (FDOKeyAuth will not be available for push/pull)", "error", didErr)
+		}
 	}
 
-	// Set up DID document serving and PullAuth service
-	if config.DID.ServeDocument || config.PullService.Enabled {
-		didSigner, didErr := setupDID(ctx, config, mux, state)
-		if didErr != nil {
-			slog.Warn("DID setup failed (pull service will not be available)", "error", didErr)
-		} else if config.PullService.Enabled {
-			setupPullService(config, mux, didSigner, deviceStorage.VoucherDir)
-		}
+	// Add voucher receiver endpoint if enabled (FDOKeyAuth primary + Bearer fallback)
+	if config.VoucherReceiver.Enabled {
+		setupVoucherReceiver(config, mux, state, didSigner, deviceStorage, dispatcher)
+	}
+
+	// Set up PullAuth service
+	if config.PullService.Enabled && didSigner != nil {
+		setupPullService(config, mux, didSigner, deviceStorage.VoucherDir)
 	}
 
 	srv := &http.Server{

@@ -184,9 +184,9 @@ func runPullCommand(ctx context.Context) error {
 	return nil
 }
 
-// buildPullClient constructs a PullAuthClient from CLI flags.
-func buildPullClient(ctx context.Context, holderURL string) (*transfer.PullAuthClient, error) {
-	client := &transfer.PullAuthClient{
+// buildPullClient constructs a FDOKeyAuthClient from CLI flags.
+func buildPullClient(ctx context.Context, holderURL string) (*transfer.FDOKeyAuthClient, error) {
+	client := &transfer.FDOKeyAuthClient{
 		BaseURL:    holderURL,
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 	}
@@ -215,13 +215,13 @@ func buildPullClient(ctx context.Context, holderURL string) (*transfer.PullAuthC
 			if err != nil {
 				return nil, fmt.Errorf("failed to load owner public key: %w", err)
 			}
-			client.OwnerPublicKey = pub
+			client.CallerPublicKey = pub
 		} else if *pullKeyFile != "" {
 			key, err := loadPrivateKeyFromPEMFile(*pullKeyFile)
 			if err != nil {
 				return nil, fmt.Errorf("failed to load owner key: %w", err)
 			}
-			client.OwnerKey = key
+			client.CallerKey = key
 		} else {
 			return nil, fmt.Errorf("--pull-owner-pub or --pull-key required for delegate pull")
 		}
@@ -235,14 +235,14 @@ func buildPullClient(ctx context.Context, holderURL string) (*transfer.PullAuthC
 			if err != nil {
 				return nil, fmt.Errorf("failed to load owner key: %w", err)
 			}
-			client.OwnerKey = key
+			client.CallerKey = key
 		} else {
 			// Extract from database
 			key, err := loadOwnerKeyFromDB(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("failed to load owner key from database: %w", err)
 			}
-			client.OwnerKey = key
+			client.CallerKey = key
 		}
 	}
 
@@ -252,14 +252,14 @@ func buildPullClient(ctx context.Context, holderURL string) (*transfer.PullAuthC
 		if err != nil {
 			return nil, fmt.Errorf("failed to load holder public key: %w", err)
 		}
-		client.HolderPublicKey = pub
+		client.ServerPublicKey = pub
 		slog.Info("pull: holder signature verification enabled")
 	} else if *pullDID != "" {
 		// Auto-resolve holder public key from DID
 		resolver := did.NewResolver()
 		result, err := resolver.Resolve(ctx, *pullDID)
 		if err == nil && result.PublicKey != nil {
-			client.HolderPublicKey = result.PublicKey
+			client.ServerPublicKey = result.PublicKey
 			slog.Info("pull: holder key resolved from DID for signature verification")
 		}
 	}
