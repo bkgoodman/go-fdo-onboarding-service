@@ -144,49 +144,64 @@ go build -o fdo-onboarding-service .
 
 ## Configuration
 
-### Credential Reuse
+For comprehensive configuration documentation, see **[CONFIGURATION.md](CONFIGURATION.md)** which covers:
 
-Control whether devices can re-onboard multiple times:
+- Complete configuration reference with all options
+- Device templates and hierarchical configuration system
+- Voucher receiver configuration with FDOKeyAuth
+- Pull service and DID configuration
+- FSIM modules (BMO, payload, WiFi, etc.)
+- Production and development setup examples
+
+### Quick Configuration
+
+The main configuration file is `config.yaml`. Here's a minimal setup:
 
 ```yaml
-voucher_management:
-  reuse_credential: false  # Set to true to allow re-onboarding
-```
-
-- **`false` (default)**: Device can only onboard **once**. After onboarding, the device receives a new credential and the old one becomes invalid.
-- **`true`**: Device can re-onboard **multiple times** with the same credential. Useful for testing or updating device configuration without changing device identity.
-
-### Device Storage System
-
-This service uses a unified device storage system for vouchers and configurations:
-
-**Directory Structure**:
-```
-vouchers/                  # Voucher files (by GUID)
-  └── {GUID}.fdoov
-configs/
-  ├── groups/              # Group configurations
-  │   └── example-fedora.yaml
-  └── devices/             # Device-specific configs
-      └── {GUID}.yaml
-```
-
-**Configuration in `config.yaml`**:
-```yaml
+debug: true
+server:
+  addr: "localhost:8080"
+  ext_addr: "localhost:8080"
+database:
+  path: "test.db"
+manufacturing:
+  init_keys_if_missing: true
 device_storage:
   voucher_dir: "vouchers"
   config_dir: "configs"
-  delete_after_onboard: false
-  cache_configs: false
 ```
 
-**Key Features**:
+### Device Templates
+
+The service supports hierarchical device configuration with templates:
+
+```
+configs/
+├── groups/                      # Group templates
+│   ├── fedora.yaml              # Fedora systems
+│   └── raspberry-pi.yaml       # Raspberry Pi
+└── devices/                     # Device-specific configs
+    ├── abc123def456.yaml         # Individual device
+    └── def456abc123.yaml         # Individual device
+```
+
+**Usage:**
+1. Create group templates in `configs/groups/`
+2. Copy `configs/devices/example-device-template.yaml` to `{GUID}.yaml`
+3. Reference group: `group: "fedora"` in device config
+4. Override settings as needed
+
+Configuration merges: **Device** → **Group** → **Global**
+
+### Key Features
+
 - **Hierarchical configuration**: Device → Group → Global
 - **Automatic voucher loading**: Place `.fdoov` files in vouchers directory
 - **Device-specific FSIM**: Each device can have custom configurations
-- **Metadata tracking**: Track onboarding history and re-onboarding
+- **FDOKeyAuth support**: Cryptographic authentication for push/pull
+- **Template system**: Reusable device and group configurations
 
-See `DEVICE_STORAGE.md` for comprehensive documentation.
+See **[CONFIGURATION.md](CONFIGURATION.md)** for complete documentation.
 
 ## Voucher Receiver (HTTP Push)
 
@@ -207,12 +222,22 @@ Enable the voucher receiver in `config.yaml`:
 
 ```yaml
 voucher_receiver:
-  enabled: true                    # Enable the receiver (default: false)
+  enabled: true                    # Enable the receiver
   endpoint: "/api/v1/vouchers"     # HTTP endpoint path
+  auth_method: "both"              # fdokeyauth, bearer, both
   global_token: "secret-token"     # Optional global bearer token
-  validate_ownership: true         # Reject vouchers not signed to us (default: true)
-  require_auth: true               # Require authentication (default: true)
+  validate_ownership: true         # Reject vouchers not signed to us
+  require_auth: true               # Require authentication
+  session_ttl: "5m"               # FDOKeyAuth session TTL
+  max_sessions: 100              # Max FDOKeyAuth sessions
 ```
+
+**Authentication Methods:**
+- **`fdokeyauth`** - FDOKeyAuth cryptographic authentication only
+- **`bearer`** - Bearer token authentication only  
+- **`both`** - FDOKeyAuth primary, Bearer token fallback (recommended)
+
+See **[CONFIGURATION.md](CONFIGURATION.md)** for complete FDOKeyAuth setup and token management.
 
 ### Token Management
 
